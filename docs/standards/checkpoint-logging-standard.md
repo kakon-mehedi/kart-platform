@@ -33,7 +33,7 @@ taxonomy defines and checks for, flow by flow, service by service.
 
 ## The checkpoint taxonomy
 
-Every flow, sync or async, gets these stages logged via
+Every flow, sync or async, gets its meaningful checkpoints logged via
 `logger.LogInformation("Stage {Stage}: <human message>", "<PascalCaseStageName>", ...structuredArgs)`,
 inside a `using var _ = KartFlowContext.Push(FlowNames.<FlowName>)` scope opened **once**, at the
 outermost entry point (a controller/minimal-API action, or a consumer's `ProcessAsync` override) —
@@ -41,47 +41,57 @@ never re-pushed deeper in the same call chain.
 
 | # | Stage | Where it fires |
 |---|---|---|
-| 1 | `<Verb>RequestReceived` | Controller/endpoint action entry — route, key request fields, actor id if present |
-| 2 | `<Command>Dispatched` | Immediately before `sender.Send(command)` |
-| 3 | `<Command>HandlerStarted` | First line inside `Handle()` — generalized platform-wide via `LoggingBehaviour`, see below |
-| 4 | `<Rule>Validated` / `<Rule>ValidationFailed` | Any FluentValidation or manual guard; **failures log at Warning with the reason before throwing** |
-| 5 | `<Decision>Branch` | Any meaningfully different code path worth searching for later (`MfaChallengeIssued` vs `MfaNotRequiredTokensIssued`, `OtpRequestNoOpUnknownEmail`, ...) |
-| 6/7 | `<Entity>Persisted` [+ `<Event>OutboxEventEnqueued`] | After `SaveChangesAsync`, with entity id(s) and outbox event id(s)/type — one line when they're the same `SaveChanges` call |
-| 8 | `OutboxEventPublished` | The outbox relay's poller — last line in the producer |
-| 9 | `<Event>Consumed` | Consumer's entry point, first line in the consuming service — queue name, event id |
-| 10 | `<NestedCommand>Dispatched` | When the consumer's handler dispatches its own internal command |
-| 11 | `<ReadModel>WriteStarted` / `<ReadModel>Persisted` | CQRS denormalized-read-model writes |
-| 12 | `<Flow>StepCompleted` / `<Flow>Completed` | Terminal success line for that service's participation — producer and consumer sides each get their own |
+| 1 | `<Verb>RequestReceived` | Controller/endpoint action entry — route, key request fields, actor id if present. This is the only entry-point log; don't add a second "dispatched" line immediately before `sender.Send` — nothing meaningful happens in between |
+| 2 | `<Rule>ValidationFailed` | Any FluentValidation or manual guard failure, logged at Warning with the reason before throwing. FluentValidation failures are generalized once via `ValidationBehaviour`, see below — a handler only adds its own line for manual (non-FluentValidation) guards |
+| 3 | `<Decision>Branch` | Any meaningfully different code path worth searching for later (`MfaChallengeIssued` vs `MfaNotRequiredTokensIssued`, `OtpRequestNoOpUnknownEmail`, ...). This is the highest-value stage — it's what "understand the flow" actually means |
+| 4 | `<Entity>Persisted` | One line after `SaveChangesAsync`, naming the entity id(s) **and** any outbox event id(s)/type enqueued in the same call — this is also usually the natural terminal/completion line for the request; don't add a separate "step completed" line right after it if nothing happens in between |
+| 5 | `OutboxEventPublished` | The outbox relay's poller — last line in the producer |
+| 6 | `<Event>Consumed` | Consumer's entry point, first line in the consuming service — queue name, event id. Don't add a separate "dispatching nested command" line right after it unless real logic happens in between |
+| 7 | `<ReadModel>Persisted` | CQRS denormalized-read-model writes, after the write succeeds |
+
+**One log line per checkpoint, not one line per taxonomy label.** The taxonomy names distinct
+*moments* worth being able to search for — it does not mean every stage above gets its own
+`LogInformation` call regardless of what's actually happening in the code. When two stages fall on
+either side of a line or two of glue code with no branching or I/O between them (e.g. "request
+received" immediately followed by "command dispatched", or "persisted" immediately followed by
+"process completed"), that's one checkpoint, logged once, worded to cover both. Prefer merging over
+adding a second line — a flow with 12 log lines that all fire on every single request is harder to
+read than one with 5 that each mean something.
+
+**No generic per-request log.** Don't add a `HandlerStarted`/`HandlerCompleted`-style line that
+fires unconditionally for every command regardless of what it does — it's pure volume with no
+diagnostic value beyond what the entry-point log and OpenTelemetry's own RED metrics already give
+you for free (`kart-conventions.md`'s Observability section). Every log line added by this standard
+should answer a question a support engineer would actually ask ("did this fail, and why", "which
+path did this take", "what got written/published") — if a line doesn't do that, cut it.
 
 **Failure at any stage** logs once at Warning/Error with the same Stage-naming convention, right
 where the decision to fail is made — never a second log wrapped around it.
 `Kart.Shared.ErrorHandling`'s `KartExceptionHandler` already logs every exception reaching the API
 boundary once, generically (`"Request rejected with {ErrorCode} ..."`); a Stage-tagged log at the
 throw site is still correct and additional, because it's the one that's greppable by Stage name and
-carries the actual field-level reason — see the before/after example below.
+carries the actual field-level reason.
 
 **Never** manually add `traceId`/`spanId`/`service`/`Flow` — those come from `FlowEnricher`/
 `Serilog.Enrichers.Span` automatically once `KartFlowContext.Push` is active for the request. Only
 log fields that aren't already ambient: entity ids, exchange/routing key/queue name, command names,
 decision outcomes.
 
-### Generalized once: stages 3 and 4 need no per-handler code
+### Generalized once: FluentValidation failures need no per-handler code
 
-Stage 3 (`HandlerStarted`) and the generic half of stage 4 (`ValidationFailed`) are wired into each
-service's existing MediatR pipeline behaviors — `LoggingBehaviour<TRequest,TResponse>` and
-`ValidationBehaviour<TRequest,TResponse>` — rather than duplicated in every handler. Both already
-wrapped every request/validator platform-wide before this change; extending them once means every
-current *and future* command gets stage 3/4 coverage for free. A handler only needs its own
-Stage-tagged lines for manual (non-FluentValidation) guards, decision branches, persistence, and
-completion — stages 4 (manual guards only), 5, 6/7, 9-12.
+The generic half of stage 2 (`ValidationFailed`) is wired into each service's existing
+`ValidationBehaviour<TRequest,TResponse>` MediatR pipeline behavior rather than duplicated in every
+handler — it already wraps every validated request platform-wide, so extending it once means every
+current *and future* command gets that coverage for free. A handler only needs its own Stage-tagged
+lines for manual (non-FluentValidation) guards, decision branches, persistence, and completion.
 
 ## Before / after: `RegisterUserCommandHandler`
 
-The concrete diff this taxonomy produced on the reference flow's producer-side entity-persist +
-manual-guard-failure checkpoints (`kart-identity-service/src/Application/Features/RegisterUser/RegisterUserCommandHandler.cs`):
+The concrete diff this taxonomy produced on the reference flow's manual-guard-failure and
+entity-persist checkpoints (`kart-identity-service/src/Application/Features/RegisterUser/RegisterUserCommandHandler.cs`):
 
-**Before** — the email-uniqueness guard threw silently, and the one existing Stage-tagged log
-didn't carry the outbox event ids a support engineer would need to cross-reference into the relay
+**Before** — the email-uniqueness guard threw silently, and the completion log didn't carry the
+outbox event ids a support engineer would need to cross-reference into the relay
 (`OutboxEventPublished`) or the consuming service:
 
 ```csharp
@@ -101,8 +111,10 @@ logger.LogInformation(
 ```
 
 **After** — the rejection is now searchable by Stage before it ever reaches the generic exception
-log, and the persisted-checkpoint line names both outbox events so `{Flow="..."} |= "<eventId>"`
-finds the exact publish/consume lines downstream:
+log, and the one completion line now names both outbox events so `{Flow="..."} |= "<eventId>"`
+finds the exact publish/consume lines downstream. Note there is still only **one** log line after
+`SaveChangesAsync`, not two — the entity-persisted and process-completed checkpoints are the same
+moment here, so they're one line, not stages 4 and "12" stacked on top of each other:
 
 ```csharp
 var emailTaken = await dbContext.Users.AnyAsync(u => u.Email == email, cancellationToken);
@@ -115,21 +127,13 @@ if (emailTaken)
 await dbContext.SaveChangesAsync(cancellationToken);
 
 logger.LogInformation(
-    "Stage {Stage}: user {UserId} persisted, outbox events {UserRegisteredEventId} (UserRegistered) and {SessionCreatedEventId} (SessionCreated) enqueued",
-    "UserPersistedOutboxEventsEnqueued",
-    user.UserId,
-    userRegistered.EventId,
-    sessionCreated.EventId);
-
-logger.LogInformation(
-    "Stage {Stage}: user {UserId} registered, session {SessionId} created",
+    "Stage {Stage}: user {UserId} registered, session {SessionId} created, outbox events {UserRegisteredEventId} (UserRegistered) and {SessionCreatedEventId} (SessionCreated) enqueued",
     "RegisterProcessCompletedSuccessfully",
     user.UserId,
-    session.SessionId);
+    session.SessionId,
+    userRegistered.EventId,
+    sessionCreated.EventId);
 ```
-
-The pre-existing `RegisterProcessCompletedSuccessfully` line was kept, not replaced — per this
-standard's own rule, an existing log is enhanced or supplemented, never removed.
 
 ## Trace continuity across an async, non-messaging hop
 
@@ -210,6 +214,13 @@ write paths, but hasn't been audited checkpoint-by-checkpoint against the 12-sta
 `kart-platform/docs/services/` but no scaffolded code at all (no `.csproj`/source tree) — they need
 the platform's Project Scaffold Agent pipeline stage run first; checkpoint-logging instrumentation
 is a different, later task for those four, not something to improvise from the design docs alone.
+
+A cleanup pass ran across all 14 afterward: the first pass over-instrumented (a generic per-request
+log firing on every command regardless of what it did, redundant adjacent lines for the same
+checkpoint, and comments explaining the instrumentation process itself rather than the code). Every
+service was pruned back to the leaner rule stated above — one log line per checkpoint, no generic
+per-request log, meta-commentary about *why a log was added* removed, every failure/decision-branch
+log and every pre-existing business comment left untouched. Rebuilt and re-tested clean after.
 
 A note on how this batch was produced: most of the "Full" rows below were done by subagents running
 in parallel against a strict-scope prompt (log lines and `KartFlowContext.Push` only, nothing else).
