@@ -10,6 +10,17 @@
 #     Query Surface" (D4b) and "Non-Functional Targets Proposed by This Stage")
 #   - docs/adr/0004-analytics-full-fanin-ingestion.md (full event fan-in — no publish-side contract; this service has no write API)
 #
+# Added this pass (11th endpoint, purely additive — no existing path/schema below touched):
+#   - docs/requirements/genai-business-assistant-spec.md (approved; §10.3 — exact query-string
+#     signature and response shape for the new product-performance capability)
+#   - docs/services/kart-analytics-service/database-design.md (updated this pass;
+#     "product_performance_dashboard", the 11th MongoDB read model this endpoint serves)
+#   - docs/services/kart-analytics-service/edge-cases.md (updated this pass; "Ranking Ties at
+#     the Limit Cutoff (product-performance)" — deterministic sku-ascending tiebreak; "Rank
+#     Order/Membership Changes on Reconciliation (product-performance)" — no new envelope
+#     signal needed beyond the existing isProvisional/reconciledThrough fields; "Note: `limit`
+#     Parameter Bounds — No New Edge Case" — this stage's own job to set the actual bound)
+#
 # This contract is derived directly from architecture.md's/design-decisions.md's already-decided
 # content (D4a's enumerated dashboard/funnel set, D4b's internal-REST decision, the proposed
 # latency SLAs) rather than re-deciding anything. No rework was needed once those two docs (and
@@ -36,7 +47,7 @@
 openapi: 3.0.3
 info:
   title: kart-analytics-service Internal Query API
-  version: 1.0.0
+  version: 1.1.0
   description: >
     Internal-only, read-only dashboards/funnels query surface over Analytics' warehouse
     read models. Not reachable through the public API Gateway. Analytics ingests the full
@@ -354,6 +365,108 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  # --- Added this pass (11th dashboard endpoint; purely additive — none of the other nine
+  # paths above, or their schemas, are touched by this addition). ---
+  # Source: genai-business-assistant-spec.md §10.3 (exact query-parameter signature and
+  # response shape); database-design.md "product_performance_dashboard" (added this pass) for
+  # the read model this serves; edge-cases.md "Ranking Ties at the Limit Cutoff
+  # (product-performance)" for the deterministic sku-ascending tiebreak surfaced in the schema
+  # description below; edge-cases.md "Note: `limit` Parameter Bounds — No New Edge Case" for
+  # the explicit hand-off making the actual min/max bound this stage's own job (see the
+  # `limit` parameter's own comment for the reasoning behind the chosen bound).
+  /internal/v1/dashboards/product-performance:
+    get:
+      operationId: getProductPerformanceDashboard
+      summary: Top/bottom-N products ranked by revenue, units sold, or order count over a window.
+      description: >
+        Backs `kart-ai-assistant-service`'s product-ranking questions (genai-business-assistant-spec.md
+        §10.3, e.g. "top 5 selling products") — the one capability none of the other ten
+        dashboards/funnels can answer, since none of them sorts and truncates a result set.
+        Ties on the requested `metric` at the `limit` cutoff are broken deterministically by
+        `sku` ascending (edge-cases.md "Ranking Ties at the Limit Cutoff (product-performance)"),
+        so repeat calls against an unchanged window always return the identical set and order of
+        products — never left to MongoDB's unspecified order for equal sort-key values; exactly
+        `limit` rows are always returned once at least `limit` candidates exist. Same eventual-
+        consistency caveat as every other dashboard applies: a window spanning today's still-
+        provisional bucket can see both a product's metrics *and* its rank membership shift once
+        nightly reconciliation completes (edge-cases.md "Rank Order/Membership Changes on
+        Reconciliation (product-performance)") — disclosed via the standard
+        `isProvisional`/`reconciledThrough` envelope fields below, with no ranking-specific signal
+        beyond that (same decision).
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - name: metric
+          in: query
+          required: true
+          schema: { type: string, enum: [revenue, units_sold, order_count] }
+          description: >
+            Which metric to rank products by. All three metrics are still returned per entry
+            (genai-business-assistant-spec.md §10.3), so a caller can show secondary metrics
+            even when ranked by one.
+        - name: category
+          in: query
+          required: false
+          schema: { type: string }
+        - name: direction
+          in: query
+          required: false
+          schema: { type: string, enum: [desc, asc], default: desc }
+          description: "desc = top-N (highest metric first); asc = bottom-N (lowest metric first)."
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+          description: >
+            Max products returned (exactly `limit`, per the deterministic-tiebreak decision
+            above, once at least `limit` candidates exist for the window). Bounds are this
+            stage's own input-validation job, not a domain edge case (edge-cases.md's "Note:
+            `limit` Parameter Bounds — No New Edge Case" hands this off explicitly): `minimum:
+            1` rejects a meaningless empty-ranking request; `maximum: 100` is sized for this
+            endpoint's actual consumers — a chat/table UI rendering a ranked list
+            (genai-business-assistant-spec.md §13.2) and the business flows catalog's "top N
+            products" pattern, both of which cite N in the single/low-double-digit range (e.g.
+            top 5, top 10) — with generous headroom for a wider ad hoc pull, while still
+            bounding worst-case response/render payload well below full product-catalog scale.
+            A caller needing a full-catalog ranking should use the bucketed `revenue`/
+            `inventory-movement` dashboards' `sku`/`category` filters instead of raising this
+            limit further.
+      responses:
+        '200':
+          description: >
+            Up to `limit` products ranked by the requested `metric` and `direction` for the
+            window, each carrying all three metrics.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/DashboardEnvelope'
+                  - type: object
+                    required: [products]
+                    properties:
+                      products:
+                        type: array
+                        maxItems: 100
+                        description: >
+                          Ordered by the requested `metric`/`direction`; ties at the `limit`
+                          cutoff are broken by `sku` ascending, so result order is stable and
+                          reproducible across repeat calls against an unchanged window
+                          (edge-cases.md "Ranking Ties at the Limit Cutoff
+                          (product-performance)").
+                        items:
+                          type: object
+                          required: [sku, category, revenue, unitsSold, orderCount]
+                          properties:
+                            sku: { type: string }
+                            category: { type: string }
+                            revenue: { $ref: '#/components/schemas/Money' }
+                            unitsSold: { type: integer, format: int64 }
+                            orderCount: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
 components:
   securitySchemes:
     internalClientCredentials:
@@ -394,6 +507,20 @@ components:
       description: Missing/invalid internal client-credentials token.
     Forbidden:
       description: Token valid but missing the `analytics.dashboards.read` scope.
+    # Added this pass, alongside product-performance (the first endpoint in this contract
+    # with real enum/bounds validation to fail on — `metric`/`direction` enums, `limit`
+    # min/max — per api-standards.md's ProblemDetails-based Consistent Response Model).
+    BadRequest:
+      description: >
+        Request failed validation — e.g. an unrecognized `metric`/`direction` value, or
+        `limit` outside its `minimum`/`maximum` bounds. Returned as `ProblemDetails`
+        (api-standards.md's Consistent Response Model), produced solely by the validation-
+        failure path, never hand-built per endpoint.
+    ServerError:
+      description: >
+        Unhandled infrastructure failure (e.g. MongoDB unavailable), returned as
+        `ProblemDetails` by the service's single global exception handler
+        (api-standards.md's Error Handling section) — never a bespoke per-endpoint shape.
 
   schemas:
     Money:

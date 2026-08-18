@@ -1,9 +1,14 @@
 ---
 doc_type: requirement-spec
 service: kart-admin-web
-status: pending-approval
+status: approved
+approval_note: >
+  The §3.6 AI Assistant addition is approved per explicit human pipeline
+  directive alongside the rest of this capability's doc set — it follows
+  the existing §3.1-3.5 per-role-scoping format exactly, with no invented
+  role differentiation and no open question left unresolved.
 generated_by: human-authored (requirement-agent equivalent, client tier)
-source: docs/requirements/kart-requirements.md, docs/client/README.md
+source: docs/requirements/kart-requirements.md, docs/client/README.md, docs/requirements/genai-business-assistant-spec.md, docs/adr/0024-ai-assistant-service-scope-and-integration.md, docs/adr/0025-ai-assistant-query-scope.md
 ---
 
 # Requirement Spec: kart-admin-web
@@ -52,6 +57,17 @@ Grouped by the four back-office categories `kart-admin-service` already defines 
 - Audit trail viewer over `AdminActionPerformed` (`kart-admin-service`'s own `GET /admin/actions`, deliberately readable by any `Admin`-role holder regardless of category grant, per that service's own spec §4).
 - Analytics/compliance dashboards sourced from `kart-analytics-service`'s internal query API (`InternalBI` consumer path, per `container-diagram.md`) — funnels, order volume, the metrics that service's own dashboards expose.
 
+### 3.6 AI Assistant (`Admin` and `Support Agent` roles — identical access, no role differentiation)
+
+New feature area, additive to the four `kart-admin-service`-sourced categories above (§3.1–§3.5); it does not renumber or restructure any of them. Unlike §3.1–§3.5, this feature area is sourced from a different, newly-approved backend — `kart-ai-assistant-service`, a new, independently-deployed bounded context (ADR-0024) — not from `kart-admin-service`'s own four back-office categories.
+
+- **No role differentiation.** Per the source spec's own statement of who uses this capability (`docs/requirements/genai-business-assistant-spec.md` §1.3: "Both roles already have a login path into `kart-admin-web`; this capability is a new feature area inside that same console... not a new application or a new authentication path"), `Admin` and `Support Agent` receive identical access here — there is no capability gap between the two roles for this feature, unlike §3.1/§3.2/§3.4/§3.5 (`Admin`-only) or §3.3's capped `Support Agent` grant. This is stated explicitly rather than left implicit, matching §3.5's own precedent of stating a uniform-access rule outright ("deliberately readable by any `Admin`-role holder regardless of category grant") — the source spec gives no signal of a difference, so none is invented here.
+- **Chat panel interaction.** A single free-text conversational interface — one chat panel per conversation session — in which the user types a natural-language business question (e.g. "What are the top 5 selling products in the last 7 days?") and receives an answer built from three elements: a plain-language answer summary, a data table (always present when the answer references a metric), and an optional chart when the query shape calls for one (source spec §3.1–§3.3, §13). A later message in the same conversation is interpreted as a follow-up against the previously resolved query, not a fresh, context-free question (source spec §3.2, §14). Ambiguous questions surface a clarifying question rather than a silently-guessed answer (source spec §3.2, §15).
+- **Backend.** Calls the new `kart-ai-assistant-service` (ADR-0024) exclusively via `kart-api-gateway` — this app never bypasses the Gateway to reach it, the same "never bypass the gateway" rule this app's own `architecture.md` already establishes for every backend call (`kart-admin-web/architecture.md`: "All backend calls, same 'never bypass the gateway' rule as `kart-web`"). Request shape: `POST /v1/ai-assistant/query` (source spec §21.1). `kart-ai-assistant-service` in turn has exactly one synchronous downstream dependency of its own, `kart-analytics-service` (ADR-0024) — this app never calls Analytics directly for this feature; Analytics remains reachable from this app only via the existing §3.5 Audit & Compliance path.
+- **Access gating.** Reuses the existing `Admin`/`Support Agent` JWT session already issued by `kart-identity-service` for this app (§5 above) — no new login path, and no change to this app's own auth flow. The feature is additionally gated by the new `ai-assistant.query` scope (ADR-0025), embedded in that same JWT via Identity's existing role→scope mapping for both roles alike. A control for this feature area renders disabled/hidden for any caller whose JWT lacks the scope — same "UX convenience, not the enforcement point" rule this app already applies to every other write/read control (§5); the authoritative checks happen at `kart-ai-assistant-service`'s own boundary and, downstream, at `kart-analytics-service`'s own boundary (source spec §17), not in this client.
+- **Read-only.** The assistant never mutates any business data (source spec §9, NG8) — this feature area has no create/update/delete controls, unlike §3.1/§3.2/§3.3's write actions.
+- **Provisional-data disclosure.** When the underlying data hasn't finished reconciliation, the answer states this explicitly (`isProvisional`/`reconciledThrough`, source spec §12/FR-012) rather than presenting a still-settling figure as final — the same "surface, don't hide" convention `kart-analytics-service`'s own dashboards already follow in this app's existing §3.5 view.
+
 ## 4. Non-Functional Requirements
 
 | Category | Target | Note |
@@ -71,4 +87,4 @@ Grouped by the four back-office categories `kart-admin-service` already defines 
 
 1. **Idle-session-timeout duration for elevated sessions — RESOLVED.** `Admin`: 15-minute idle timeout, 24-hour absolute cap (inherits `kart-identity-service`'s existing federated-refresh-token cap, no new number invented). `Support Agent`: 20-minute idle timeout, 8-hour absolute cap (one work shift — an elevated-privilege session never inherits `kart-web`'s 90-day native cap regardless of login method). Full policy, warning-popup timing, silent-refresh, and multi-tab behavior in [`../security.md`](../security.md) §2.2.
 2. **One shell, role-gated sections — confirmed, final.** Matches the platform's own "one coarse role model, fine-grained per-service" pattern (BRD §24.1). The `support-console/` feature folder (`architecture.md`) stays structurally isolated from the four `Admin`-only folders specifically so this doesn't quietly become two shells by accretion — revisit only if the two roles' daily workflows prove materially incompatible in practice, which no signal today indicates.
-3. **Scope growth** — this spec is intentionally light; expand §3 as `kart-admin-service`'s own back-office categories (§6 of its spec) evolve, rather than this doc drifting stale against that service's own source of truth. Not a gap — a stated maintenance policy.
+3. **Scope growth** — this spec is intentionally light; expand §3 as `kart-admin-service`'s own back-office categories (§6 of its spec) evolve, rather than this doc drifting stale against that service's own source of truth. Not a gap — a stated maintenance policy. §3.6 (AI Assistant) is itself an instance of this policy: a new feature area added additively, sourced from a newly-approved backend outside `kart-admin-service`, without touching §3.1–§3.5.

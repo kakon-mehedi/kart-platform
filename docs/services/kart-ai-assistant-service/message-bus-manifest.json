@@ -1,0 +1,9 @@
+{
+  "service": "kart-ai-assistant-service",
+  "exchange": null,
+  "dlx": null,
+  "queues": [],
+  "dlqs": [],
+  "retry": [],
+  "_comment": "kart-ai-assistant-service has zero asynchronous publish or consume relationships (ADR-0024; requirement-spec.md §4/§5; architecture.md Dependencies table) — it owns no RabbitMQ exchange, DLX, queue, or retry ladder, and is not a Kafka consumer/producer either. Its only integration edge is a single synchronous call to kart-analytics-service's internal query API (OAuth2 Client Credentials, analytics.dashboards.read); its two local aggregates (ConversationSession in Redis, AuditRecord in its own durable store) are populated entirely by synchronous, in-process request handling, never by a published or consumed event. Contrast with kart-admin-service (exchange set, publishes AdminActionPerformed, consumes nothing) and kart-search-service/kart-recommendation-service (exchange null, publish nothing, but own a DLX and consumer queues) — this service has neither side populated. Any future addition of a publish or consume edge is a scope change requiring its own ADR (ADR-0024's own Consequences), not an incremental edit to this manifest."
+}

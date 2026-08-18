@@ -114,6 +114,12 @@ graph TB
 
     InternalBI[Internal BI/ops/dashboard consumers<br/>not via public Gateway] -->|"sync, internal REST query API (/internal/v1/...) + BI-tool warehouse connection"| Analytics
 
+    AI[kart-ai-assistant-service<br/>NL→intent · orchestration · audit]
+    LLMGateway[Model Gateway / LLM Provider<br/>external, provider-agnostic]
+    GW -->|"sync REST, POST /v1/ai-assistant/query, bearerAuth: ai-assistant.query (ADR-0025)"| AI
+    AI -->|"sync, OAuth2 client-credentials, analytics.dashboards.read"| Analytics
+    AI -->|"sync, structured-output 'plan' call + grounded 'explain' call"| LLMGateway
+
     Admin -->|"sync REST, catalog management"| Product
     Admin -->|"sync REST, catalog management"| Category
     Admin -->|"sync REST, coupon issuance, POST /coupons"| Offer
@@ -137,4 +143,4 @@ graph TB
     Notification -. NotificationSent .-> Analytics
 ```
 
-_Placed so far: `kart-offer-service`, `kart-review-service`, `kart-cart-service`, `kart-notification-service`, `kart-inventory-service`, `kart-recommendation-service`, `kart-admin-service`, `kart-payment-service`, `kart-category-service`, `kart-shipping-service`, `kart-delivery-tracking-service`, `kart-product-service`, `kart-wishlist-service`, `kart-identity-service`, `kart-user-service`, `kart-search-service`, `kart-analytics-service`, and now `kart-order-service` (this pass) — the last service on the platform to pass through this stage; every edge Payment's, Inventory's, Shipping's, Offer's, and Delivery Tracking's own Architecture Agent passes had already anticipated from their own side is now formalized here from Order's side too, plus the new Admin→Order `resolve-fulfillment-exception` edge (ADR-0015). This diagram is now complete for all 18 deployable service repos. `CarrierWebhook`/`CarrierAPI` are external, non-Kart systems (per-carrier third parties), not bounded contexts of this platform — shown only because they are Delivery Tracking's largest integration surface._
+_Placed so far: `kart-offer-service`, `kart-review-service`, `kart-cart-service`, `kart-notification-service`, `kart-inventory-service`, `kart-recommendation-service`, `kart-admin-service`, `kart-payment-service`, `kart-category-service`, `kart-shipping-service`, `kart-delivery-tracking-service`, `kart-product-service`, `kart-wishlist-service`, `kart-identity-service`, `kart-user-service`, `kart-search-service`, `kart-analytics-service`, `kart-order-service`, and now `kart-ai-assistant-service` (this pass) — a brand-new capability, not a gap-fill on an existing service (ADR-0024), added as a single new node (`AI`) with exactly one synchronous edge to an existing peer (`kart-analytics-service`) and one synchronous edge to an external, non-Kart system (`LLMGateway`, the Model Gateway/LLM provider) — no other edge, sync or async, is introduced. This diagram is now complete for all 19 deployable service repos. `CarrierWebhook`/`CarrierAPI` are external, non-Kart systems (per-carrier third parties), not bounded contexts of this platform — shown only because they are Delivery Tracking's largest integration surface._

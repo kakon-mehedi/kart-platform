@@ -15,7 +15,7 @@ graph TB
     Partner[Partner API Consumer]
 
     subgraph Kart["Kart (system boundary)"]
-        System[Kart E-Commerce Platform<br/>20 bounded-context services]
+        System[Kart E-Commerce Platform<br/>21 bounded-context services]
     end
 
     EnterpriseIdP[Enterprise IdP<br/>Okta / Azure AD / Google Workspace<br/>SAML/OIDC]
@@ -38,6 +38,8 @@ graph TB
     System -->|create shipment, poll status| Carriers
     System -.->|offloads static/image traffic| CDN
 ```
+
+_Service count updated to 21 to include `kart-ai-assistant-service` (the platform's 19th deployable repo, [ADR-0024](../adr/0024-ai-assistant-service-scope-and-integration.md)) — a purely internal, back-office capability surfaced inside `kart-admin-web` and reached only by the existing `Support Agent`/`Admin` actors below. It introduces no new actor and no new external system at this level; see [container-diagram.md](container-diagram.md) and [service-boundaries.md](service-boundaries.md) for its component-level detail._
 
 ## Actors
 
