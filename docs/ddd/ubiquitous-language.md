@@ -402,3 +402,30 @@ Every term is owned by exactly **one** bounded context. Other contexts reference
 | `analytics.dashboards.read` scope | kart-analytics-service | The scope this service's own OAuth2 Client-Credentials service-principal token carries when calling Analytics; Analytics' own security model, unchanged and unmodeled here |
 | Seller / Vendor | — (no such bounded context exists on this platform) | Permanently out of scope (ADR-0026); no placeholder field, dimension, or entity is reserved anywhere in this service's own model |
 | Geography (city/area/region) | kart-order-service (blocked on `OrderConfirmed.address`'s undefined shape) | Permanently out of scope for this build (ADR-0027); no such dimension appears on `ResolvedIntent` |
+
+## Owned by `kart-shopping-assistant-service`
+
+| Term | Definition | Kind |
+|---|---|---|
+| ShoppingAssistantSession | The per-conversation, Redis-backed holder of the last resolved shopping intent + slots and the FR-004 pending-confirmation state; TTL/idle-expiry-bound, never a history of past intents. **Naming note — deliberately not `ConversationSession`:** `kart-ai-assistant-service` already owns that exact term for its own, structurally different Redis-backed intent/slot holder; this service's own concept additionally carries `pendingConfirmation` and a guest-vs-authenticated `principalId`, neither of which the sibling's aggregate has, so it is named distinctly rather than colliding on reuse (`ddd-model.md`'s Naming Notes) | Aggregate root |
+| ResolvedShoppingIntent | The canonical structured intent (`intentName` + `resolvedSlots`) this service's NL-planning LLM call is constrained to emit, validated against the closed ~12-row Intent Catalog (external application config, not a domain aggregate); replaced wholesale each turn, never mutated in place, and duplicated by value across `ShoppingAssistantSession` (the current one) and `ShoppingAssistantAuditRecord` (that turn's own frozen copy). **Naming note — deliberately not `ResolvedIntent`:** already owned by `kart-ai-assistant-service` for its own, differently-shaped structured intent | Value object |
+| PendingConfirmation | The `{ intentName, resolvedSlotsSnapshot, createdAt }` FR-004 confirmation-awaiting-a-yes/no state, existing only for a mutating intent; explicitly cleared — never left to passive TTL expiry — the instant any new intent is (re-)resolved in a later turn, so a resolved-but-unconfirmed mutating intent is never silently carried forward across a topic switch | Value object |
+| ExternalResourceReference | The single, generic `{ resourceType: (OrderRef \| CartRef \| AddressRef \| SkuRef \| CouponRef), resourceId }` shape this service uses everywhere it needs to name a foreign resource; opaque by construction and never locally validated for ownership — every downstream call forwards it, unchanged, alongside the caller's live JWT, so the owning service's own per-resource check is what actually gates any mutation | Value object |
+| ShoppingAssistantAuditRecord | The immutable, append-only record of exactly one turn (successful, clarification, confirmation-pending, or error) — substantially richer than the sibling service's own audit record, since it must also capture what mutating action was proposed/confirmed/executed and against which `ExternalResourceReference`-shaped resource. **Naming note — deliberately not `AuditRecord`:** already owned by `kart-ai-assistant-service` | Aggregate root |
+| ShoppingAssistantIdempotencyKey | The reservation-then-confirmation ledger entry for one `{ shoppingAssistantSessionId, intentName, resolvedSlotsHash }` scope, reserved before a downstream mutating call fires and reused (never re-minted) on any retry within that scope's replay window. **Naming note — deliberately not `IdempotencyKey`/`IdempotencyRecord`:** the former is already owned by `kart-order-service` (its own single-per-order header value), the latter (plus `IdempotencyKeyScope`) by `kart-payment-service` (its own reserve-then-confirm ledger) | Aggregate root |
+
+## Referenced (owned elsewhere — accessed via ACL, not redefined here)
+
+| Term | Owning Context | How `kart-shopping-assistant-service` uses it |
+|---|---|---|
+| Order / OrderLineItem / IdempotencyKey (Order's own term) | kart-order-service | `ExternalResourceReference{resourceType: OrderRef}` is a reference only; never models Order's own Saga/state machine |
+| Cart / CartLineItem | kart-cart-service | `ExternalResourceReference{resourceType: CartRef}` is a reference only; never models Cart's own aggregate |
+| Coupon / CouponCode | kart-offer-service | `ExternalResourceReference{resourceType: CouponRef}` is a reference only; coupon validity is always re-checked live at apply time, never cached here |
+| Sku / Product / Variant | kart-product-service | `ExternalResourceReference{resourceType: SkuRef}` is a reference only; never models Product's own catalog aggregate |
+| Address / AddressType | kart-user-service | `ExternalResourceReference{resourceType: AddressRef}` is a reference only; never models `UserProfile`'s own address book |
+| RecommendationSet | kart-recommendation-service | Consumed live, per turn; never cached or persisted |
+| SearchDocument | kart-search-service | Consumed live, per turn; never cached or persisted |
+| WishlistEntry | kart-wishlist-service | Referenced only via the wishlist add/move-to-cart call; never modeled locally |
+| TrackingId / TrackingRecord | kart-delivery-tracking-service | Referenced only via `GET /tracking/{trackingId}`; never models Delivery Tracking's own status-history aggregate |
+| UserId / RoleGrant (`Customer`) / `shopping-assistant.act` scope | kart-identity-service | `principalId` fields are reference-only; `shopping-assistant.act` is a stateless inline JWT-scope check (ADR-0029), not a local permission aggregate |
+| PaymentIntent / any Payment concept | kart-payment-service | **Never referenced anywhere in this model, not even by an opaque id** — ADR-0028's explicit, permanent exclusion |

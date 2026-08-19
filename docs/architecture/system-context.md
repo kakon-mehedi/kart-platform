@@ -15,7 +15,7 @@ graph TB
     Partner[Partner API Consumer]
 
     subgraph Kart["Kart (system boundary)"]
-        System[Kart E-Commerce Platform<br/>21 bounded-context services]
+        System[Kart E-Commerce Platform<br/>20 bounded-context services]
     end
 
     EnterpriseIdP[Enterprise IdP<br/>Okta / Azure AD / Google Workspace<br/>SAML/OIDC]
@@ -39,7 +39,7 @@ graph TB
     System -.->|offloads static/image traffic| CDN
 ```
 
-_Service count updated to 21 to include `kart-ai-assistant-service` (the platform's 19th deployable repo, [ADR-0024](../adr/0024-ai-assistant-service-scope-and-integration.md)) — a purely internal, back-office capability surfaced inside `kart-admin-web` and reached only by the existing `Support Agent`/`Admin` actors below. It introduces no new actor and no new external system at this level; see [container-diagram.md](container-diagram.md) and [service-boundaries.md](service-boundaries.md) for its component-level detail._
+_Service count now 20: `kart-ai-assistant-service` (the platform's 19th deployable repo, [ADR-0024](../adr/0024-ai-assistant-service-scope-and-integration.md)) — a purely internal, back-office capability surfaced inside `kart-admin-web` and reached only by the existing `Support Agent`/`Admin` actors — plus, as of this pass, `kart-shopping-assistant-service` (the platform's **20th** deployable repo, [ADR-0028](../adr/0028-shopping-assistant-service-scope-and-integration.md)) — a `Customer`-facing, mutation-capable capability surfaced inside `kart-web`, reached by the existing `Customer` actor (both authenticated and, for its read-only intents, anonymous/guest, per [ADR-0029](../adr/0029-shopping-assistant-scope-and-guest-access.md)). Neither addition introduces a new actor or a new external system at this level — both route through the existing API Gateway box like every other service, and the Model Gateway/LLM provider each of them calls is an internal integration detail one level down, not a system-context-level external dependency (the same treatment `PaymentGW`/`Carriers` get, and the LLM provider does not, since — unlike a payment processor or a carrier — it is invoked from inside the system boundary as an implementation detail of two specific services, not as a boundary Kart itself transacts across at this level). The prior version of this caption stated the count as "21" while only 19 services had actually been placed at that point in the graph — a pre-existing arithmetic inconsistency corrected here alongside this pass's own addition, not introduced by it. See [container-diagram.md](container-diagram.md) and [service-boundaries.md](service-boundaries.md) for both services' component-level detail._
 
 ## Actors
 

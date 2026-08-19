@@ -120,6 +120,20 @@ graph TB
     AI -->|"sync, OAuth2 client-credentials, analytics.dashboards.read"| Analytics
     AI -->|"sync, structured-output 'plan' call + grounded 'explain' call"| LLMGateway
 
+    SA["kart-shopping-assistant-service<br/>NL→intent · Customer-facing · mutates orders/cart/coupons"]
+    Search["kart-search-service<br/>Full-text search + facets + ranking (node added by this pass — see caption)"]
+    GW -->|"Tier 1 role-exclusion: reject Admin/Support Agent/Partner API only — Customer and anonymous both pass; POST /v1/shopping-assistant/query, bearerAuth: shopping-assistant.act or anonymous (ADR-0029)"| SA
+    SA -->|"sync, GET /orders/{id}, POST /orders/{id}/cancel, POST /orders (checkout-create — chains into Order's own Inventory-reserve leg, ADR-0009), per-edge circuit breaker"| Order
+    SA -->|"sync, GET /cart, POST /cart/items, POST /cart/checkout, per-edge circuit breaker"| Cart
+    SA -->|"sync, POST /coupons/validate, GET /promotions/active, per-edge circuit breaker"| Offer
+    SA -->|"sync, GET /search, per-edge circuit breaker"| Search
+    SA -->|"sync, GET /products/{sku}, per-edge circuit breaker"| Product
+    SA -->|"sync, GET /recommendations/{userId}, per-edge circuit breaker"| Recommendation
+    SA -->|"sync, GET /users/{id}, per-edge circuit breaker"| UserSvc
+    SA -->|"sync, GET /tracking/{trackingId}, per-edge circuit breaker"| DeliveryTracking
+    SA -->|"sync, /wishlist add/move-to-cart, per-edge circuit breaker"| Wishlist
+    SA -->|"sync, structured-output plan/confirm/summarize calls, capability-tier request, no vendor named"| LLMGateway
+
     Admin -->|"sync REST, catalog management"| Product
     Admin -->|"sync REST, catalog management"| Category
     Admin -->|"sync REST, coupon issuance, POST /coupons"| Offer
@@ -143,4 +157,4 @@ graph TB
     Notification -. NotificationSent .-> Analytics
 ```
 
-_Placed so far: `kart-offer-service`, `kart-review-service`, `kart-cart-service`, `kart-notification-service`, `kart-inventory-service`, `kart-recommendation-service`, `kart-admin-service`, `kart-payment-service`, `kart-category-service`, `kart-shipping-service`, `kart-delivery-tracking-service`, `kart-product-service`, `kart-wishlist-service`, `kart-identity-service`, `kart-user-service`, `kart-search-service`, `kart-analytics-service`, `kart-order-service`, and now `kart-ai-assistant-service` (this pass) — a brand-new capability, not a gap-fill on an existing service (ADR-0024), added as a single new node (`AI`) with exactly one synchronous edge to an existing peer (`kart-analytics-service`) and one synchronous edge to an external, non-Kart system (`LLMGateway`, the Model Gateway/LLM provider) — no other edge, sync or async, is introduced. This diagram is now complete for all 19 deployable service repos. `CarrierWebhook`/`CarrierAPI` are external, non-Kart systems (per-carrier third parties), not bounded contexts of this platform — shown only because they are Delivery Tracking's largest integration surface._
+_Placed so far: `kart-offer-service`, `kart-review-service`, `kart-cart-service`, `kart-notification-service`, `kart-inventory-service`, `kart-recommendation-service`, `kart-admin-service`, `kart-payment-service`, `kart-category-service`, `kart-shipping-service`, `kart-delivery-tracking-service`, `kart-product-service`, `kart-wishlist-service`, `kart-identity-service`, `kart-user-service`, `kart-search-service`, `kart-analytics-service`, `kart-order-service`, `kart-ai-assistant-service`, and now `kart-shopping-assistant-service` (this pass) — a brand-new, mutation-capable capability, not a gap-fill on an existing service ([ADR-0028](../adr/0028-shopping-assistant-service-scope-and-integration.md)), added as a single new node (`SA`) with nine synchronous edges (`Order`, `Cart`, `Offer`, `Search`, `Product`, `Recommendation`, `UserSvc`, `DeliveryTracking`, `Wishlist` — each independently circuit-breakered, see `kart-shopping-assistant-service/architecture.md`) and one synchronous edge to an external, non-Kart system (`LLMGateway`). No edge of any kind exists from `SA` to `Payment` — deliberately excluded per ADR-0028. This diagram is now complete for all 20 deployable service repos. Note: the `Search` node is added here for the first time as part of this pass, purely to anchor `SA`'s own new edge to it — `kart-search-service` has its own approved `architecture.md` with a fully resolved dependency graph, but that service's own Architecture Agent pass never appended a node/entry into this diagram or `service-boundaries.md`; this is a pre-existing gap in the platform's cumulative architecture memory, flagged here, not backfilled, since fully placing `kart-search-service` (and `kart-user-service`, whose bare `UserSvc` node already existed from other services' event edges and is reused unchanged here) is outside the scope of a `kart-shopping-assistant-service`-targeted run. `CarrierWebhook`/`CarrierAPI` are external, non-Kart systems (per-carrier third parties), not bounded contexts of this platform — shown only because they are Delivery Tracking's largest integration surface._

@@ -22,6 +22,7 @@ This makes `kart-web` architecturally closer to a thin, fan-out **API Gateway co
 | Outbound | `kart-api-gateway` (WS/SSE upgrade) | Real-time channel | **Async, push** | Cart sync, live inventory/pricing, order/delivery tracking — see `api-integration-map.md` for the channel-per-feature breakdown. |
 | Outbound | Payment Gateway (external) | Hosted tokenization field/redirect | **Sync, direct** | The **one** exception to "never bypass Kart's own gateway" — raw card data must never transit Kart's own infrastructure at all (`requirement-spec.md` §5), so this call goes straight from the browser to the external Payment Gateway's own hosted UI, per `system-context.md`'s existing `System -->|charge, refund| PaymentGW` edge (here, the equivalent edge originates from the browser for tokenization only; the actual charge still flows through `kart-payment-service`). |
 | Outbound | CDN | Static assets, images | **Sync** | Per `system-context.md`'s existing `System -.->|offloads static/image traffic| CDN` edge — `kart-web`'s build artifacts and product imagery are CDN-served, not origin-served, from day one. |
+| Outbound | `kart-shopping-assistant-service` (new, ADR-0028) | REST, `POST /v1/shopping-assistant/query`, via `kart-api-gateway` only | **Sync** | New dependency edge, added for §3.8 (Shopping Assistant). Reached exclusively through `kart-api-gateway` — same "never bypass the gateway" rule as every other backend call, only extended to a new peer behind the same Gateway (`kart-shopping-assistant-service/architecture.md`'s own "sits behind the Gateway like every other `kart-web` backend call" statement). Unlike every other row in this table, this one endpoint serves both anonymous and authenticated traffic (ADR-0029) — this app's own client for it must conditionally attach the `Customer` JWT when a session exists and omit it otherwise, rather than treating auth as all-or-nothing the way `core/http/`'s generated clients do for every other service. |
 | Inbound (fan-in) | Browsers (Customers) | HTTPS | **Sync** | The actual traffic this app exists to serve, at the BRD §3 load ceiling. |
 
 No other Kart repo depends on `kart-web` — it is a leaf in the platform's repository interaction graph (`PLATFORM_BLUEPRINT.md` §12), the same position a pure Gateway consumer occupies.
@@ -55,6 +56,7 @@ kart-web/
 │   │   │   ├── order-tracking/        # Order history/detail + Shipping + Delivery Tracking (§3.4)
 │   │   │   ├── account/               # Identity + User (§3.5)
 │   │   │   ├── notifications/         # in-app center + push registration (§3.6)
+│   │   │   ├── shopping-assistant/    # §3.8 (new) — chat panel + confirmation-turn rendering, calls kart-shopping-assistant-service via the Gateway only; the one feature folder consumed by both anonymous and authenticated sessions
 │   │   │   └── cms/                   # About/FAQ/Terms/Privacy/Help — build-time prerendered, see seo.md §11 tier 2
 │   │   └── app.routes.ts              # every features/* entry is lazy
 │   ├── server.ts                      # Angular SSR entry point
@@ -68,6 +70,7 @@ kart-web/
 Notes:
 - `pricing-promotions/` is its own feature (not folded into `cart` or `checkout`) because it's genuinely shared by both — cart shows a live quote, checkout re-quotes before payment (per `requirement-spec.md` Domain Invariant #2). Splitting it avoids `cart` and `checkout` each growing a duplicate pricing-display implementation.
 - `catalog/` intentionally spans four backend services (Product, Category, Search, Recommendation) plus Review's display surface, because from the customer's perspective "browsing the catalog" is one cohesive capability — splitting it into four UI features to mirror the backend 1:1 would fragment a single user journey for no client-side benefit. This is the frontend analogue of the Offer Service merge rationale (`ADR-0001`): the merge criterion is "what does the user experience as one thing," not "how many backend services answer it."
+- `shopping-assistant/` sits alongside the other feature folders, not nested inside `checkout/`, `cart/`, or `order-tracking/`, even though its intents span all three (plus catalog, pricing-promotions, and account) — because from the customer's perspective it is one conversational surface, not a mode of any single existing feature. It is the one feature folder this app's own `core/auth/` guard must treat as partially public: unlike every other authenticated feature, a route into `shopping-assistant/` does not itself require a session, only the specific mutating actions it can trigger do (§3.8; ADR-0029's Tier-1 role-exclusion-not-requirement Gateway posture).
 
 ## SSR / Hosting / Deployment Topology
 
