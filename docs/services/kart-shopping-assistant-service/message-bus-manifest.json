@@ -1,0 +1,9 @@
+{
+  "service": "kart-shopping-assistant-service",
+  "exchange": null,
+  "dlx": null,
+  "queues": [],
+  "dlqs": [],
+  "retry": [],
+  "_comment": "kart-shopping-assistant-service has zero asynchronous publish or consume relationships (ADR-0028; requirement-spec.md §9 item 4; architecture.md Dependencies table) — it owns no RabbitMQ exchange, DLX, queue, or retry ladder, and is not a Kafka consumer/producer either. Its only integration edges are nine synchronous, per-edge-circuit-broken calls (kart-order-service, kart-cart-service, kart-offer-service, kart-search-service, kart-product-service, kart-recommendation-service, kart-user-service, kart-delivery-tracking-service, kart-wishlist-service) plus an external Model Gateway/LLM Provider call; its three local aggregates (ShoppingAssistantSession in Redis, ShoppingAssistantAuditRecord and ShoppingAssistantIdempotencyKey in its own PostgreSQL store) are populated entirely by synchronous, in-process request handling, never by a published or consumed event. Mirrors kart-ai-assistant-service/message-bus-manifest.json's own empty-topology shape for the platform's other zero-async-edges service, generalized from one downstream dependency to nine. This service's stack is FastAPI/Python (ADR-0030), not .NET — the platform's JSON manifest schema is deliberately language-agnostic, so this file's shape is identical regardless of which language would eventually declare against it. If a publish/consume edge is ever added, the Python-native declaring mechanism is a kart_shared.messaging startup hook using aio-pika to read this same schema (design-decisions.md's 'RabbitMQ Manifest-Declaration Equivalent' decision, documented but not built) — that mechanism does not exist today and this file does not anticipate it. Any future addition of a publish or consume edge is a scope change requiring its own ADR (ADR-0028's own Consequences section), not an incremental edit to this manifest."
+}

@@ -1,0 +1,920 @@
+# doc_type: api-contract
+# service: kart-shopping-assistant-service
+# status: approved (no prior published contract to break — first issue, /v1)
+# generated_by: api-design-agent
+# source:
+#   - docs/services/kart-shopping-assistant-service/requirement-spec.md (approved)
+#   - docs/services/kart-shopping-assistant-service/edge-cases.md (approved)
+#   - docs/services/kart-shopping-assistant-service/design-decisions.md (approved)
+#   - docs/services/kart-shopping-assistant-service/architecture.md (approved)
+#   - docs/services/kart-shopping-assistant-service/ddd-model.md (approved — ShoppingAssistantSession,
+#     ShoppingAssistantAuditRecord, ShoppingAssistantIdempotencyKey, ExternalResourceReference,
+#     PendingConfirmation, ResolvedShoppingIntent)
+#   - docs/adr/0028-shopping-assistant-service-scope-and-integration.md (bounded-context/data-ownership;
+#     nine-peer allowlist; kart-payment-service permanently excluded)
+#   - docs/adr/0029-shopping-assistant-scope-and-guest-access.md (fixes the bearerAuth securitySchemes
+#     shape and the dual `security: [{bearerAuth:[shopping-assistant.act]}, {}]` requirement verbatim —
+#     reproduced below unmodified per that ADR's own instruction to the API Design Agent)
+#   - docs/adr/0030-shopping-assistant-python-stack-exception.md (stack exception — does not change
+#     this contract's shape; FastAPI is a runtime choice, not a wire-contract one)
+#   - docs/services/kart-ai-assistant-service/api-contract.yaml (closest structural precedent for the
+#     securitySchemes convention and discriminated-response-shape style — adapted, not copied: that
+#     service is read-only/single-dependency/all-authenticated; this one mutates, fans out to nine
+#     peers, and has a genuine anonymous-caller population, per architecture.md's own "structural
+#     opposite" framing)
+#   - docs/standards/kart-conventions.md ("API Versioning" — every service starts at /v1)
+#   - agent-reusables/docs/standards/api-standards.md (Idempotency-Key mandate on mutating writes;
+#     Consistent Response Model; ProblemDetails error envelope)
+#
+# ---------------------------------------------------------------------------
+# Versioning (kart-conventions.md "API Versioning")
+# ---------------------------------------------------------------------------
+# First published contract for this service — starts at /v1 per this platform's
+# standing rule. No Contract Compatibility Agent report is required for this
+# issue (nothing published yet to break).
+#
+# ---------------------------------------------------------------------------
+# One endpoint, dual-shape (query AND confirmation submission) — why no
+# separate "confirm" route exists
+# ---------------------------------------------------------------------------
+# requirement-spec.md's own architecture (and architecture.md's Component/
+# Boundary Diagram) fix exactly one public, Gateway-fronted route for this
+# capability — a single conversational endpoint, mirroring the sibling
+# service's own one-endpoint shape but for a fundamentally different (guest
+# OR authenticated, mutating-capable) caller population. A pending FR-004
+# confirmation is therefore submitted back through the *same* endpoint, not a
+# second `/confirm` route: the request body's optional `confirmation` object
+# carries `{ pendingConfirmationId, affirmed }`, referencing the specific
+# `PendingConfirmation` value object living inside that session's own
+# `ShoppingAssistantSession` aggregate (ddd-model.md). This also lets a
+# customer answer a confirmation with an ordinary free-text reply ("yes,
+# cancel it") via `message` alone, since UX-1 (button vs. typed "yes") is
+# explicitly still open (requirement-spec.md §10) — this contract does not
+# pick one mechanism over the other; it supports both, and the resolution of
+# which one `kart-web` actually builds is left to that stage, unchanged by
+# this file.
+#
+# ---------------------------------------------------------------------------
+# Security scheme — ADR-0029's own prescribed shape, reproduced verbatim
+# ---------------------------------------------------------------------------
+# ADR-0029 fixes both the `bearerAuth` securitySchemes block and the dual
+# `security` requirement (`bearerAuth: [shopping-assistant.act]` OR `{}`
+# anonymous) explicitly so this stage does not invent its own convention —
+# reproduced below unmodified, the same discipline
+# kart-ai-assistant-service/api-contract.yaml already followed for ADR-0025's
+# equivalent block. Per ADR-0029's own instruction: "documents in the
+# endpoint's own description that mutating-intent rejection for an
+# unauthenticated caller is an application-level 401/403 (FR-001), not an
+# OpenAPI-level `403` on the route itself" — see the endpoint description and
+# the `401`/`403` response descriptions below.
+#
+# ---------------------------------------------------------------------------
+# Idempotency — two distinct mechanisms at two distinct layers (do not
+# conflate them)
+# ---------------------------------------------------------------------------
+# 1. `Idempotency-Key` request header (THIS FILE'S CONCERN, client-supplied,
+#    OPTIONAL at the OpenAPI level): a transport-level retry-safety value the
+#    *client* mints and supplies so that if its own HTTP call to this
+#    endpoint is retried (network flake, page reload, double-tap), the
+#    service can recognize "this is the same attempt, not a second one." It
+#    cannot be marked `required` at the schema level because this single
+#    route also serves guest/read-only turns for which no mutating action is
+#    ever attempted — api-standards.md's "mandatory on every money-moving
+#    POST" is satisfied at the *application* layer instead: whenever the
+#    resolved intent is mutating (or the request submits `confirmation`),
+#    the service treats a missing header as a signal to generate one itself
+#    and echo it back in the `Idempotency-Key` response header, so the
+#    client can supply that same value on its own next retry. This mirrors
+#    the same "single shared route, precise enforcement pushed to
+#    application code" pattern ADR-0029 already uses for the `security`
+#    block above, applied here to idempotency instead of authorization.
+# 2. `ShoppingAssistantIdempotencyKey` (ddd-model.md's own aggregate,
+#    SERVER-DERIVED, never client-supplied, NOT a field anywhere on this
+#    wire contract): a narrower, intent-level dedup key the service computes
+#    itself from `(shoppingAssistantSessionId, intentName,
+#    resolvedSlotsHash)` — this is what actually gets forwarded as the
+#    downstream `Idempotency-Key` header on the call to `kart-order-service`/
+#    `kart-cart-service`/`kart-offer-service` (design-decisions.md's
+#    Idempotency-Key Persistence decision). It exists to guarantee "one
+#    attempt per resolved mutating action," which is a different guarantee
+#    from "one attempt per client HTTP call" — a client could, in principle,
+#    resend the exact same resolved intent under a *different* client-
+#    supplied `Idempotency-Key` header (e.g. a fresh page load) and the
+#    server-derived key still prevents a second downstream mutation, because
+#    it is keyed on the *resolved slots*, not on whatever transport-level
+#    value the client happened to send. The exact mechanism, if any, for
+#    correlating an inbound `Idempotency-Key` header value to a specific
+#    server-derived scope on retry is an implementation detail left to the
+#    coding stage, not fixed here — this contract fixes only that the two
+#    are structurally distinct and serve different guarantees.
+#
+# ---------------------------------------------------------------------------
+# Discriminated response shape — responseType enum
+# ---------------------------------------------------------------------------
+# Per requirement-spec.md FR-004/FR-006/FR-008/FR-010, a single conversational
+# turn resolves to one of six *structurally different* response bodies, never
+# a single generic envelope with an optional/nullable "error" field bolted
+# on:
+#   - `answer`                — FR-006, a resolved, grounded read-only result
+#                                (track/search/compare/wishlist-view/general
+#                                Q&A; requirement-spec §2 rows 2, 5, 6, 11, 12
+#                                where read-only).
+#   - `clarification`         — FR-008, an ambiguous required slot; concrete,
+#                                selectable options only, never a best guess.
+#   - `confirmation_required` — FR-004, a resolved *mutating* intent awaiting
+#                                the customer's explicit yes/no before the
+#                                downstream call fires; states the concrete
+#                                effect plainly, never a vague "proceed?".
+#   - `executed`              — FR-005/FR-006/FR-009, the downstream mutating
+#                                call has actually fired; `executionOutcome`
+#                                distinguishes `success` / `rejected` (a
+#                                truthfully-surfaced downstream 409, FR-005)
+#                                / `partial_failure` (FR-009's "actual
+#                                resulting state, truthfully," for a composed
+#                                multi-call intent like row 7/8/9).
+#   - `unsupported`           — FR-010, a confirmed capability gap (rows 1, 4
+#                                [partially], 8, 10), a non-commerce ask, or
+#                                an out-of-role request — naming what's
+#                                missing, never a fabricated action or a
+#                                silent no-op reported as success.
+#   - `session_expired`       — an approved, ddd-model.md-mandated extension
+#                                to this taxonomy (not in requirement-spec.md's
+#                                own FR list verbatim, the same kind of closed,
+#                                approved addition kart-ai-assistant-service/
+#                                api-contract.yaml's own header note already
+#                                precedents for its sibling's `expired-session`
+#                                value): ddd-model.md's `ShoppingAssistantSession`
+#                                invariant states "an orphaned follow-up must
+#                                surface a distinguishable 'expired' response,
+#                                never be silently misread as if
+#                                `lastResolvedIntent` were still present" — this
+#                                is that response, structurally distinct from
+#                                `unsupported` (a capability gap) and from a
+#                                plain `400` (malformed input).
+#
+# `unsupported`'s distinguishable sub-reasons (FR-009/FR-010's own
+# "distinguishable, not generic" requirement, applied at the reason-code
+# level too): `confirmed_gap` (rows 1, 4-partially, 8, 10 — see
+# `gapReference` below), `non_commerce` (genuinely unrelated ask), and
+# `out_of_role` (a request shaped for kart-ai-assistant-service's own
+# Admin/Support-Agent-facing analytics surface, not this Customer-facing
+# one — architecture.md's own "structural opposite of its sibling" framing).
+#
+# ---------------------------------------------------------------------------
+# No endpoint stubbed for the confirmed cross-service gaps
+# ---------------------------------------------------------------------------
+# `kart-order-service`'s planned `POST /orders/{id}/return-request`
+# (requirement-spec §2 row 1, §10 Architecture-1) and `kart-offer-service`'s
+# "best coupon for this cart" auto-discovery endpoint (§2 row 8, §10 Data-1)
+# do not exist in either of those services' own approved contracts — this
+# file does not invent a call to either. Both are referenced only as
+# `gapReference.relatedIntent` values inside an `unsupported` response
+# (`reason: confirmed_gap`) — never as a path this service attempts to call.
+# The same posture applies to row 10 (Exchange/replacement, Business-2 — no
+# bounded context exists anywhere on the platform for this) and row 4's
+# Shipped-but-not-Delivered refund gap (Business-1).
+#
+# ---------------------------------------------------------------------------
+# Per-intent `data`/`targetResource` payload shape — deliberately generic,
+# flagged forward
+# ---------------------------------------------------------------------------
+# `AnswerResponse.data` is modeled as an open `object` (`additionalProperties:
+# true`) rather than one exhaustively-typed schema per of the ~5 read-only
+# intents (track/search/compare/wishlist-view/general-Q&A). Fully typing each
+# would require re-deriving kart-order-service's/kart-search-service's/
+# kart-product-service's/kart-wishlist-service's own already-approved response
+# DTOs field-by-field inside *this* contract — out of scope for this pass and
+# not requested by any upstream document (requirement-spec §9's own
+# non-blocking list assigns only "the intent→endpoint mapping table's wire
+# format" here, not each backing service's full payload shape). Flagged as an
+# open TODO for a later API-contract refinement pass or the coding stage, not
+# invented here.
+#
+# ---------------------------------------------------------------------------
+# Session-lock conflict (`409`) vs. a downstream-surfaced `409` — not the
+# same thing, kept structurally distinct
+# ---------------------------------------------------------------------------
+# edge-cases.md's "Concurrent/Duplicate Mutating Turns in the Same
+# Conversation Session" decision (per-session serialization) is this
+# endpoint's own `409` HTTP response — a second in-flight request for the
+# same `sessionId` is rejected outright. This is NOT the same case as a
+# downstream service's own `409` (e.g. `kart-order-service` rejecting a
+# cancel because the order already shipped, FR-005) — that is a *successful*
+# turn from this endpoint's own perspective (HTTP `200`, `responseType:
+# executed`, `executionOutcome: rejected`, `downstreamStatusCode: 409`),
+# never this endpoint's own `409` status. Conflating the two would erase
+# exactly the "distinguishable, not generic" requirement FR-009 states.
+#
+# Publishing a stable copy to a shared-contracts repo is deferred until that
+# repo exists in this pipeline's scope (per this agent's standard output
+# note).
+
+openapi: 3.0.3
+info:
+  title: kart-shopping-assistant-service API
+  version: 1.0.0
+  description: >
+    Public-facing (via kart-api-gateway, ADR-0028's "Gateway never bypassed"
+    rule), Customer-facing (and guest-eligible for read-only intents)
+    conversational endpoint for the Kart Shopping Assistant
+    (requirement-spec.md §1). Unlike its read-only sibling
+    (kart-ai-assistant-service), this service mutates real orders, carts,
+    coupons, and — indirectly, only via kart-order-service's own
+    cancel/return-request surface — money (ADR-0028), and fans out
+    synchronously to nine downstream bounded contexts, never
+    kart-payment-service directly (ADR-0028; architecture.md's
+    Distributed-Monolith Risk section).
+
+servers:
+  - url: /v1
+
+security:
+  # ADR-0029's own dual requirement, reproduced verbatim: an authenticated
+  # Customer JWT carrying the `shopping-assistant.act` scope, OR anonymous.
+  # See the `paths` entry below for the identical, endpoint-level repetition
+  # ADR-0029 itself shows (both are the same requirement; the endpoint-level
+  # one is kept explicit rather than relying on inheritance, matching
+  # ADR-0029's own reproduced YAML block exactly).
+  - bearerAuth: [shopping-assistant.act]
+  - {}
+
+paths:
+  /shopping-assistant/query:
+    post:
+      operationId: queryShoppingAssistant
+      summary: >
+        Send one conversational turn to the Kart Shopping Assistant — a new
+        question, a follow-up, or a submitted confirmation for a pending
+        mutating action.
+      description: >
+        Accepts exactly one conversational turn (requirement-spec.md FR-001–
+        FR-010) and returns exactly one of six discriminated response shapes
+        (see `responseType` on `#/components/schemas/ShoppingAssistantResponse`
+        and this file's own header comment for the full reasoning):
+        `answer`, `clarification`, `confirmation_required`, `executed`,
+        `unsupported`, `session_expired`.
+
+        **Guest vs. authenticated (ADR-0029):** this route's own `security`
+        requirement below is a dual OR — a `Customer`-scoped bearer JWT
+        (`shopping-assistant.act`), or fully anonymous. The Gateway's own
+        Tier-1 check (ADR-0028/0029) is a role-*exclusion*
+        (`Admin`/`Support Agent`/`Partner API` rejected), not a
+        role-*requirement* — an anonymous caller legitimately reaches this
+        endpoint for read-only intents (product discovery, comparison,
+        general Q&A — requirement-spec §2 rows 5, 6, 12). **A mutating
+        intent from an unauthenticated caller is rejected before the LLM is
+        ever invoked (FR-001) as an application-level `401`/`403` — this is
+        enforced by this service's own code after NL intent resolution
+        begins, never by the OpenAPI `security` requirement on this route
+        itself**, since the very same route must legally admit anonymous
+        traffic for the read-only case. See the `401`/`403` responses below.
+
+        **Confirmation submission uses this same endpoint** (see this file's
+        header comment) — supply the `confirmation` object, referencing the
+        `pendingConfirmationId` a prior `confirmation_required` response
+        returned, alongside or instead of a free-text `message`.
+
+        **Idempotency** — see this file's header comment for the two-layer
+        design: the `Idempotency-Key` header below is a client-supplied,
+        transport-level retry-safety value; it is distinct from this
+        service's own internally-derived, intent-scoped
+        `ShoppingAssistantIdempotencyKey` (ddd-model.md), which is never
+        exposed on this wire contract.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      security:
+        - bearerAuth: [shopping-assistant.act]
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShoppingAssistantQueryRequest'
+      responses:
+        '200':
+          description: >
+            Exactly one of the six discriminated `responseType` variants —
+            see `ShoppingAssistantResponse`'s `oneOf`/`discriminator` below.
+          headers:
+            Idempotency-Key:
+              $ref: '#/components/headers/IdempotencyKeyResponseHeader'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShoppingAssistantResponse'
+              examples:
+                answer:
+                  summary: Track-order intent, resolved and grounded (requirement-spec §2 row 2)
+                  value:
+                    sessionId: "9c1f3a2e-6b7d-4e11-9a10-2f6a1d9e7c11"
+                    responseType: answer
+                    intentName: track_order
+                    answer: >-
+                      Your order #4021 shipped yesterday and is currently in
+                      transit — estimated delivery is August 21.
+                    data:
+                      orderId: "4021"
+                      status: "Shipped"
+                      trackingId: "TRK-88213"
+                clarification:
+                  summary: Ambiguous orderId reference (edge-cases.md "Ambiguous Slot Resolution")
+                  value:
+                    sessionId: "9c1f3a2e-6b7d-4e11-9a10-2f6a1d9e7c11"
+                    responseType: clarification
+                    intentName: cancel_order
+                    question: "Which order did you mean?"
+                    options:
+                      - label: "Order #4021 — placed Aug 15, Processing"
+                        value: "4021"
+                      - label: "Order #4018 — placed Aug 12, Processing"
+                        value: "4018"
+                confirmation_required:
+                  summary: FR-004 confirmation before a mutating cancel
+                  value:
+                    sessionId: "9c1f3a2e-6b7d-4e11-9a10-2f6a1d9e7c11"
+                    responseType: confirmation_required
+                    intentName: cancel_order
+                    pendingConfirmationId: "5e2a9f10-33c4-4b8e-9d2a-1a2b3c4d5e6f"
+                    actionDescription: >-
+                      This will cancel order #4021 and refund $49.99 to your
+                      original payment method. Proceed?
+                    targetResource: { resourceType: order, resourceId: "4021" }
+                executed_success:
+                  summary: A mutating action actually executed and succeeded
+                  value:
+                    sessionId: "9c1f3a2e-6b7d-4e11-9a10-2f6a1d9e7c11"
+                    responseType: executed
+                    intentName: cancel_order
+                    executionOutcome: success
+                    summary: "Order #4021 has been cancelled and the refund has been initiated."
+                    targetResource: { resourceType: order, resourceId: "4021" }
+                executed_rejected:
+                  summary: FR-005 — a downstream 409 surfaced truthfully, not silently retried
+                  value:
+                    sessionId: "9c1f3a2e-6b7d-4e11-9a10-2f6a1d9e7c11"
+                    responseType: executed
+                    intentName: cancel_order
+                    executionOutcome: rejected
+                    downstreamStatusCode: 409
+                    summary: "Order #4021 already shipped moments ago, so it can no longer be cancelled."
+                    targetResource: { resourceType: order, resourceId: "4021" }
+                executed_partial_failure:
+                  summary: >-
+                    FR-009 — coupon-then-checkout composition, coupon step
+                    failed (edge-cases.md "Downstream Partial Outage
+                    Mid-Composed-Intent"), checkout proceeded without it
+                  value:
+                    sessionId: "9c1f3a2e-6b7d-4e11-9a10-2f6a1d9e7c11"
+                    responseType: executed
+                    intentName: checkout_with_saved_defaults
+                    executionOutcome: partial_failure
+                    summary: >-
+                      The coupon "SAVE10" could not be applied
+                      (kart-offer-service is temporarily unavailable), so
+                      checkout completed at the full price of $89.98.
+                    targetResource: { resourceType: order, resourceId: "4022" }
+                    partialFailureDetail:
+                      completedSteps:
+                        - { step: "checkout", outcome: "success" }
+                      failedStep: { step: "apply_coupon", reason: "downstream-unavailable" }
+                      resultingState: "Order #4022 created without a coupon applied."
+                unsupported_confirmed_gap:
+                  summary: Row 10, Exchange/replacement — no bounded context exists (Business-2)
+                  value:
+                    sessionId: "9c1f3a2e-6b7d-4e11-9a10-2f6a1d9e7c11"
+                    responseType: unsupported
+                    reason: confirmed_gap
+                    message: >-
+                      I can't arrange a replacement shipment — Kart doesn't
+                      currently support exchanges. I can start a return
+                      (refund) for the item instead, or connect you with a
+                      Support Agent.
+                    gapReference:
+                      relatedIntent: arrange_replacement
+                      missingCapability: "No Exchange/replacement bounded context exists anywhere on the platform."
+                      trackedAs: "requirement-spec.md §10 Business-2"
+                session_expired:
+                  summary: A follow-up arrived after the session's idle TTL elapsed
+                  value:
+                    sessionId: "9c1f3a2e-6b7d-4e11-9a10-2f6a1d9e7c11"
+                    responseType: session_expired
+                    message: "This conversation has expired — please restate your request."
+        '400':
+          description: >
+            Malformed input — e.g. neither `message` nor `confirmation`
+            supplied, `message` over its length bound, `sessionId` not a
+            valid UUID, or `confirmation.pendingConfirmationId` that isn't a
+            syntactically valid UUID (a *semantically* stale/mismatched
+            `pendingConfirmationId` — one that doesn't match the session's
+            actual current pending confirmation, FR-007 — is a `200`
+            `unsupported`/`session_expired`-shaped outcome, not a `400`; see
+            `ShoppingAssistantConfirmationSubmission`'s own description).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '401':
+          description: >
+            Not authenticated (missing/invalid/expired Identity-issued JWT)
+            **on a request that could only be legal for an authenticated
+            caller** — i.e., the resolved intent is mutating and no valid
+            `Customer` JWT is present (FR-001, ADR-0029). This is an
+            application-level check run after NL intent resolution begins,
+            not an OpenAPI-level `security` rejection on this route — an
+            anonymous caller is otherwise fully permitted to reach this
+            endpoint for a read-only intent. Generic message only (FR-010's
+            "no leakage of which specific check failed").
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: >
+            Authenticated, but the caller's role/scope claims don't satisfy
+            what this specific turn requires — the JWT lacks the
+            `shopping-assistant.act` scope (ADR-0029) despite carrying a
+            resolved mutating intent, or the Gateway's own Tier-1
+            role-exclusion was somehow bypassed for an `Admin`/`Support
+            Agent`/`Partner API` caller (ADR-0028/0029 — this service is
+            `Customer`/guest-only). Generic message only, deliberately not
+            naming which check failed (FR-010).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: >
+            **This service's own session-lock conflict** — a previous
+            message in this same `sessionId` is still being processed
+            (edge-cases.md "Concurrent/Duplicate Mutating Turns in the Same
+            Conversation Session," per-session serialization). This is
+            structurally distinct from a *downstream* service's own `409`
+            (e.g. `kart-order-service` rejecting an already-shipped cancel),
+            which is surfaced as a `200` `executed`/`rejected` response
+            instead — see this file's header comment. The client may retry
+            once the in-flight turn completes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '5XX':
+          description: >
+            Genuine infrastructure failure inside this service itself — not
+            to be confused with a downstream peer being unavailable (which
+            degrades gracefully per-edge via `purgatory`'s circuit breakers,
+            architecture.md, and surfaces as a truthful `200`
+            `unsupported`/`executed`-partial-failure response, never a raw
+            5xx bubbled up). Handled by this service's single global
+            exception handler (api-standards.md), never a hand-built inline
+            error body.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+components:
+  parameters:
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Client-supplied, transport-level retry-safety value for this HTTP
+        call itself — OPTIONAL at this contract level because a single
+        shared route also serves guest/read-only turns for which no
+        mutating action is ever attempted. If the resolved intent is
+        mutating (or the request submits `confirmation`) and this header is
+        absent, the service generates one itself and echoes it back via the
+        `Idempotency-Key` response header. This is NOT the same key as
+        ddd-model.md's `ShoppingAssistantIdempotencyKey` (server-derived from
+        `sessionId` + resolved intent + resolved-slots-hash, never exposed
+        on this wire contract, never client-suppliable) — see this file's
+        header comment for the full two-layer reasoning.
+
+  headers:
+    IdempotencyKeyResponseHeader:
+      description: >
+        Echoes the request's `Idempotency-Key` header verbatim if the client
+        supplied one; otherwise, for a turn that resolved to a mutating
+        intent (`confirmation_required` or `executed`), a freshly generated
+        value the client should supply on any retry of this same HTTP call.
+        Absent for a purely read-only turn (`answer`, `clarification`,
+        `unsupported`, `session_expired`) where no mutating action was ever
+        at stake.
+      schema:
+        type: string
+        format: uuid
+
+  securitySchemes:
+    # Reproduced verbatim from ADR-0029's Decision section — do not diverge
+    # from this shape; ADR-0029 fixes it explicitly so this stage does not
+    # invent its own convention independently.
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Identity-issued RS256 JWT carrying a Customer role claim plus the
+        `shopping-assistant.act` scope (ADR-0029), forwarded unchanged by the
+        API Gateway. Optional for read-only-eligible requests (anonymous
+        callers permitted); required for any request that resolves to a
+        mutating intent — enforced by this service's own application code
+        (FR-001), not by the OpenAPI security requirement itself, since a
+        single conversational endpoint serves both guest and authenticated
+        traffic and the intent shape is not known until after NL resolution.
+
+  schemas:
+    # ------------------------------------------------------------------
+    # Shared enums / value objects
+    # ------------------------------------------------------------------
+
+    ShoppingIntentName:
+      type: string
+      description: >
+        The closed, enumerable intent catalog (requirement-spec.md §2,
+        twelve rows) — application config, never modeled as a domain
+        aggregate (ddd-model.md's "Referenced, Never Owned" section). Every
+        value here corresponds to exactly one §2 catalog row; the catalog
+        itself, and its intent→endpoint mapping, are not re-derived on this
+        wire contract (requirement-spec §9's own non-blocking list).
+      enum:
+        - return_product               # §2 row 1 — GAP, Architecture-1
+        - track_order                  # §2 row 2
+        - cancel_order                 # §2 row 3
+        - request_refund               # §2 row 4 — indirect via #1/#3; Shipped-not-Delivered is a gap, Business-1
+        - product_discovery            # §2 row 5
+        - compare_products             # §2 row 6
+        - add_recommended_item_to_cart # §2 row 7
+        - discover_and_apply_best_coupon # §2 row 8 — discovery step is a GAP, Data-1
+        - checkout_with_saved_defaults # §2 row 9 — default payment method is a GAP, Data-2
+        - arrange_replacement          # §2 row 10 — GAP, Business-2, no Exchange context exists
+        - wishlist_add_or_move_to_cart # §2 row 11
+        - general_support_qa           # §2 row 12
+
+    ExternalResourceReference:
+      type: object
+      description: >
+        Mirrors ddd-model.md's `ExternalResourceReference` value object
+        exactly — an opaque `{resourceType, resourceId}` pair, never an
+        embedded copy of the referenced order/cart/coupon/address/product
+        record (ADR-0028's ownership table). This service never validates
+        ownership of this reference itself — the owning downstream service's
+        own per-resource check is the sole actual gate (requirement-spec §5).
+      required: [resourceType, resourceId]
+      properties:
+        resourceType:
+          type: string
+          enum: [order, cart, address, sku, coupon]
+        resourceId:
+          type: string
+
+    ClarificationOption:
+      type: object
+      description: >
+        One concrete, selectable option (FR-008 — "never a default guess").
+        `value` is the opaque slot value the client echoes back (as a
+        follow-up `message`, or a future structured-selection mechanism —
+        UX-1 is open) if the customer picks this option.
+      required: [label, value]
+      properties:
+        label:
+          type: string
+          example: "Order #4021 — placed Aug 15, Processing"
+        value:
+          type: string
+          example: "4021"
+
+    GapReference:
+      type: object
+      description: >
+        Present only on an `unsupported` response with `reason:
+        confirmed_gap` — names the specific, already-catalogued gap rather
+        than a generic "not supported." Never a stub for a call this
+        service cannot actually make (see this file's header comment).
+      required: [relatedIntent, missingCapability]
+      properties:
+        relatedIntent:
+          $ref: '#/components/schemas/ShoppingIntentName'
+        missingCapability:
+          type: string
+          description: Plain-language statement of what's missing and why.
+          example: "kart-order-service has no POST /orders/{id}/return-request endpoint yet."
+        trackedAs:
+          type: string
+          nullable: true
+          description: >
+            A citation into this service's own requirement-spec.md §10 open
+            question (e.g. "Architecture-1", "Data-1", "Business-1",
+            "Business-2") for traceability — not a live link or a call this
+            service attempts.
+          example: "requirement-spec.md §10 Architecture-1"
+
+    PartialFailureDetail:
+      type: object
+      description: >
+        Present only when `executionOutcome: partial_failure` — FR-009's
+        "the actual resulting state, truthfully" for a composed multi-call
+        intent (row 7's item-resolution-then-cart-add, row 8's
+        coupon-discovery-then-apply, row 9's checkout sequence).
+      required: [completedSteps, failedStep, resultingState]
+      properties:
+        completedSteps:
+          type: array
+          items:
+            type: object
+            required: [step, outcome]
+            properties:
+              step: { type: string }
+              outcome: { type: string }
+        failedStep:
+          type: object
+          required: [step, reason]
+          properties:
+            step: { type: string }
+            reason: { type: string }
+        resultingState:
+          type: string
+          description: Plain-language statement of what the system's state actually is now.
+          example: "Order #4022 created without a coupon applied."
+
+    # ------------------------------------------------------------------
+    # Request
+    # ------------------------------------------------------------------
+
+    ShoppingAssistantConfirmationSubmission:
+      type: object
+      description: >
+        Answers a prior turn's `confirmation_required` response (FR-004).
+        `pendingConfirmationId` must match the `PendingConfirmation` value
+        currently held on this session's own `ShoppingAssistantSession`
+        aggregate (ddd-model.md) — a mismatched or already-superseded id
+        (e.g. the customer changed topics in between, edge-cases.md's
+        "Follow-up Message That Should Reset vs. Carry Forward a Pending
+        Mutating Confirmation" — the pending confirmation was already
+        discarded) is not a `400`; it resolves to a `200` `unsupported`
+        response explaining that the pending confirmation is no longer
+        valid and a fresh request is needed.
+      required: [pendingConfirmationId, affirmed]
+      properties:
+        pendingConfirmationId:
+          type: string
+          format: uuid
+        affirmed:
+          type: boolean
+          description: >
+            `true` — proceed with the mutating action this confirmation
+            named. `false` — decline; the pending confirmation is discarded,
+            no downstream call fires.
+
+    ShoppingAssistantQueryRequest:
+      type: object
+      description: >
+        At least one of `message` or `confirmation` must be supplied —
+        enforced as a fast-fail application-level validation (api-
+        standards.md "Validation"), not the only line of defense. A pure
+        button/explicit-selection confirmation submission (UX-1 undecided)
+        may supply `confirmation` alone with an empty/omitted `message`; an
+        ordinary conversational turn (new question, follow-up, or a typed
+        "yes") supplies `message`.
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Omit to start a new session — this service generates a fresh
+            `ShoppingAssistantSessionId` (ddd-model.md) and returns it in
+            every response. Supply the value returned by a prior turn's
+            response to continue that session as a follow-up (FR-007) or to
+            submit a pending confirmation.
+        message:
+          type: string
+          nullable: true
+          minLength: 0
+          maxLength: 2000
+          description: >
+            UTF-8 free-text input for this turn — a new question, a
+            follow-up, or a typed affirmation/decline of a pending
+            confirmation. May be omitted (or empty) only if `confirmation`
+            is supplied instead.
+          example: "cancel my order #4021"
+        confirmation:
+          $ref: '#/components/schemas/ShoppingAssistantConfirmationSubmission'
+          nullable: true
+
+    # ------------------------------------------------------------------
+    # Response variants (discriminated union via `responseType`)
+    # ------------------------------------------------------------------
+
+    ShoppingAssistantResponse:
+      description: >
+        Discriminated union — see this file's header comment for the full
+        reasoning behind each of the six variants and why they must be
+        structurally distinct rather than one generic envelope.
+      oneOf:
+        - $ref: '#/components/schemas/ShoppingAssistantAnswerResponse'
+        - $ref: '#/components/schemas/ShoppingAssistantClarificationResponse'
+        - $ref: '#/components/schemas/ShoppingAssistantConfirmationRequiredResponse'
+        - $ref: '#/components/schemas/ShoppingAssistantExecutedResponse'
+        - $ref: '#/components/schemas/ShoppingAssistantUnsupportedResponse'
+        - $ref: '#/components/schemas/ShoppingAssistantSessionExpiredResponse'
+      discriminator:
+        propertyName: responseType
+        mapping:
+          answer: '#/components/schemas/ShoppingAssistantAnswerResponse'
+          clarification: '#/components/schemas/ShoppingAssistantClarificationResponse'
+          confirmation_required: '#/components/schemas/ShoppingAssistantConfirmationRequiredResponse'
+          executed: '#/components/schemas/ShoppingAssistantExecutedResponse'
+          unsupported: '#/components/schemas/ShoppingAssistantUnsupportedResponse'
+          session_expired: '#/components/schemas/ShoppingAssistantSessionExpiredResponse'
+
+    ShoppingAssistantAnswerResponse:
+      type: object
+      description: >
+        FR-006 — a resolved, grounded read-only result. Every concrete fact
+        in `answer` must trace to a field in `data` (post-generation
+        grounding check); on a grounding-check failure, falls back to a
+        template-built response from raw data (FR-006), still returned under
+        this same `responseType`.
+      required: [sessionId, responseType, intentName, answer, data]
+      properties:
+        sessionId: { type: string, format: uuid }
+        responseType: { type: string, enum: [answer] }
+        intentName: { $ref: '#/components/schemas/ShoppingIntentName' }
+        answer:
+          type: string
+          description: Natural-language explanation, grounded strictly in `data` (FR-006).
+        data:
+          type: object
+          additionalProperties: true
+          description: >
+            Structured result backing `answer` — shape varies per intent
+            (track/search/compare/wishlist-view/general-Q&A). Deliberately
+            left generic; see this file's header comment ("Per-intent
+            `data`/`targetResource` payload shape") for why an exhaustive
+            per-intent schema is flagged forward rather than specified here.
+
+    ShoppingAssistantClarificationResponse:
+      type: object
+      description: >
+        FR-008 — an ambiguous required slot (orderId, SKU, reasonCode).
+        Never a best guess; always concrete, selectable options scoped to
+        the caller's own resources (requirement-spec §5).
+      required: [sessionId, responseType, question, options]
+      properties:
+        sessionId: { type: string, format: uuid }
+        responseType: { type: string, enum: [clarification] }
+        intentName:
+          $ref: '#/components/schemas/ShoppingIntentName'
+        question:
+          type: string
+          example: "Which order did you mean?"
+        options:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/ClarificationOption' }
+
+    ShoppingAssistantConfirmationRequiredResponse:
+      type: object
+      description: >
+        FR-004 — a resolved mutating intent awaiting explicit confirmation
+        before its downstream call fires. `actionDescription` must name the
+        concrete effect plainly (edge-cases.md "Confirmation or Summary Text
+        Implies a Capability That Doesn't Exist" — the grounding check
+        extends to this field too, not only `executed`'s `summary`).
+      required: [sessionId, responseType, intentName, pendingConfirmationId, actionDescription, targetResource]
+      properties:
+        sessionId: { type: string, format: uuid }
+        responseType: { type: string, enum: [confirmation_required] }
+        intentName: { $ref: '#/components/schemas/ShoppingIntentName' }
+        pendingConfirmationId:
+          type: string
+          format: uuid
+          description: >
+            References the `PendingConfirmation` value currently held on
+            this session's `ShoppingAssistantSession` aggregate
+            (ddd-model.md). The client echoes this back in a subsequent
+            `ShoppingAssistantConfirmationSubmission` to affirm or decline.
+        actionDescription:
+          type: string
+          example: "This will cancel order #4021 and refund $49.99 to your original payment method."
+        targetResource:
+          $ref: '#/components/schemas/ExternalResourceReference'
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            The pending confirmation's own expiry point, if the deployment
+            has one configured. The exact TTL figure is UX-2 (requirement-
+            spec §10) — genuinely open, not invented here; this field is
+            nullable/optional for exactly that reason.
+
+    ShoppingAssistantExecutedResponse:
+      type: object
+      description: >
+        FR-005/FR-006/FR-009 — the downstream mutating call has actually
+        fired. `executionOutcome` is the load-bearing discriminant within
+        this variant: the owning downstream service's own business rules
+        are authoritative (FR-005) — a `rejected` outcome is never silently
+        retried as transient, and a `partial_failure` outcome always states
+        the actual resulting state (FR-009), never a generic error or a
+        false "success."
+      required: [sessionId, responseType, intentName, executionOutcome, summary, targetResource]
+      properties:
+        sessionId: { type: string, format: uuid }
+        responseType: { type: string, enum: [executed] }
+        intentName: { $ref: '#/components/schemas/ShoppingIntentName' }
+        executionOutcome:
+          type: string
+          enum: [success, rejected, partial_failure]
+          description: >
+            Mirrors ddd-model.md's `ExecutionOutcome.downstreamOutcome`
+            (`Success | Rejected | PartialFailure`).
+        summary:
+          type: string
+          description: >
+            Natural-language, grounded statement of what actually happened
+            (FR-006) — for `rejected`, a truthful explanation of the
+            downstream rejection (FR-005), never a raw/generic error.
+        downstreamStatusCode:
+          type: integer
+          nullable: true
+          description: >
+            Present when `executionOutcome: rejected` — the actual HTTP
+            status the owning downstream service returned (e.g. `409`),
+            surfaced truthfully rather than translated into a generic
+            failure (FR-005).
+        targetResource:
+          $ref: '#/components/schemas/ExternalResourceReference'
+        partialFailureDetail:
+          $ref: '#/components/schemas/PartialFailureDetail'
+          nullable: true
+          description: Present only when `executionOutcome: partial_failure`.
+
+    ShoppingAssistantUnsupportedResponse:
+      type: object
+      description: >
+        FR-010 — a confirmed capability gap, a non-commerce ask, or an
+        out-of-role request. Names what's missing; never a fabricated
+        action or a silent no-op reported as success.
+      required: [sessionId, responseType, reason, message]
+      properties:
+        sessionId: { type: string, format: uuid }
+        responseType: { type: string, enum: [unsupported] }
+        reason:
+          type: string
+          enum: [confirmed_gap, non_commerce, out_of_role]
+          description: >
+            `confirmed_gap` — rows 1, 4 (Shipped-not-Delivered case only), 8,
+            10 (see `gapReference`). `non_commerce` — a genuinely unrelated
+            ask. `out_of_role` — a request shaped for
+            kart-ai-assistant-service's own Admin/Support-Agent-facing
+            surface, not this Customer-facing one.
+        message:
+          type: string
+          description: Plain-language explanation of what's missing, and a concrete next step where one exists.
+        gapReference:
+          $ref: '#/components/schemas/GapReference'
+          nullable: true
+          description: Present only when `reason: confirmed_gap`.
+
+    ShoppingAssistantSessionExpiredResponse:
+      type: object
+      description: >
+        An orphaned follow-up arrived after the session's idle TTL elapsed
+        (ddd-model.md's `ShoppingAssistantSession` invariant) — never
+        silently misread as if the prior `lastResolvedIntent` were still
+        present. The exact TTL figure is UX-2 (requirement-spec §10),
+        genuinely open and not invented here; only the structural
+        requirement to surface this distinguishably is fixed.
+      required: [sessionId, responseType, message]
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The (now-expired/unknown) session id the client supplied, if any.
+        responseType: { type: string, enum: [session_expired] }
+        message:
+          type: string
+          example: "This conversation has expired — please restate your request."
+
+    Problem:
+      type: object
+      description: >
+        RFC 7807-style problem details — matches this repo's own established
+        `Problem` convention (kart-admin-service/api-contract.yaml,
+        kart-ai-assistant-service/api-contract.yaml, kart-identity-service/
+        api-contract.yaml), applied here for consistency rather than
+        introducing a new error-envelope shape (api-standards.md "Consistent
+        Response Model": errors are never bespoke per service).
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: session-lock-conflict
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true

@@ -1,0 +1,738 @@
+# doc_type: api-contract
+# service: kart-ai-assistant-service
+# status: approved (no prior published contract to break — first issue)
+# generated_by: api-design-agent
+# source:
+#   - docs/services/kart-ai-assistant-service/requirement-spec.md (approved)
+#   - docs/services/kart-ai-assistant-service/ddd-model.md (approved)
+#   - docs/services/kart-ai-assistant-service/architecture.md (approved)
+#   - docs/adr/0025-ai-assistant-query-scope.md (fixes the bearerAuth securitySchemes
+#     shape verbatim — reproduced below unmodified)
+#   - docs/requirements/genai-business-assistant-spec.md — §8 (intent schema),
+#     §13.1/§13.2 (visualization rule table + response contract), §15.3
+#     (clarification shape), §19 (error/failure-handling table), §21.1 (request/
+#     response shape), §20 (audit field list, informs which facts are wire-visible
+#     vs. audit-only)
+#   - docs/services/kart-analytics-service/api-contract.yaml (structural analog —
+#     closest existing read-only, no-mutating-endpoint contract on this platform)
+#
+# ---------------------------------------------------------------------------
+# Versioning (kart-conventions.md "API Versioning")
+# ---------------------------------------------------------------------------
+# This is this service's first published contract — starts at /v1 per this
+# platform's standing rule ("every service starts at /v1, no service may skip
+# straight to /v2 at initial release"). No Contract Compatibility Agent report
+# is required for this issue (nothing published yet to break).
+#
+# ---------------------------------------------------------------------------
+# Idempotency-Key — deliberately NOT required on this endpoint
+# ---------------------------------------------------------------------------
+# api-standards.md mandates `Idempotency-Key` only on money-moving/non-retry-
+# safe writes. This service has exactly one endpoint, POST /v1/ai-assistant/
+# query, and it is read-only end to end: it never mutates any business data
+# anywhere on the platform (requirement-spec.md §1 "Read-only, full stop";
+# ADR-0024). A retried or duplicated call re-runs the same read against
+# kart-analytics-service and re-generates an explanation — it has no side
+# effect beyond writing one more AuditRecord row (ddd-model.md), the same way
+# a duplicate GET against any of kart-analytics-service's own dashboard
+# endpoints is harmless. This mirrors kart-analytics-service/api-contract.yaml's
+# own reasoning verbatim ("No endpoint here mutates state or money-adjacent
+# state ... the Idempotency-Key header required by api-standards.md for
+# money-moving POSTs does not apply to any route in this contract") — the one
+# structural difference is that this service's single endpoint is a POST
+# (because the request body — free-text `message` plus an optional
+# `conversationId` — doesn't fit cleanly in a GET's query-string), not a GET;
+# the POST verb here is a transport-mechanics choice for a read, not a signal
+# of mutation, and does not by itself trigger the Idempotency-Key requirement.
+#
+# ---------------------------------------------------------------------------
+# Reuse of kart-analytics-service's schemas (Money / DashboardEnvelope fields)
+# ---------------------------------------------------------------------------
+# Checked for precedent: no api-contract.yaml anywhere in this repo currently
+# $refs another service's OpenAPI file (grep across docs/services/**/api-
+# contract.yaml for a cross-file $ref or an http(s) $ref target found zero
+# matches) — OpenAPI 3.x $ref also cannot span two independently-versioned
+# files without a shared registry/bundling step this pipeline doesn't have
+# yet. Absent that precedent, the shapes this service genuinely shares with
+# kart-analytics-service (`Money`, and the `isProvisional`/`reconciledThrough`
+# pair every `DashboardEnvelope` carries) are inline-duplicated below, each
+# annotated with a comment naming kart-analytics-service/api-contract.yaml as
+# the shared origin, so a future Contract Compatibility Agent pass (or a
+# shared-contracts-repo migration) can find and reconcile them mechanically.
+# This service's own ddd-model.md already establishes that it never re-owns
+# the *data* behind these fields (ADR-0024) — duplicating the wire *shape*
+# here is not a violation of that boundary, only a schema-definition
+# convenience, exactly as FR-003/FR-012 require this service to pass
+# `isProvisional`/`reconciledThrough` through unmodified.
+#
+# `Money` (`{amount, currency}`) is deliberately NOT duplicated here: the
+# §13.2 response contract renders every monetary value as a plain scalar
+# inside `data.rows` (a presentation-ready table cell, e.g. `4820.00`), never
+# as a nested `{amount, currency}` object on the wire — there is no field in
+# this contract whose shape genuinely matches `Money`, so duplicating it
+# would define a schema this contract never actually uses.
+#
+# ---------------------------------------------------------------------------
+# Reconciling the source spec's error-`type` taxonomy (§19 vs. §21.1)
+# ---------------------------------------------------------------------------
+# §21.1 (request/response shape) glosses the 200 response's error variant as
+# carrying "an explicit error `type` field distinguishing unsupported/
+# ambiguous/unauthorized/unavailable/no-data" — a five-value list lifted
+# loosely from §19's own table. Cross-checking each of those five values
+# against what §19's table *actually* says about how that scenario is wire-
+# represented shows the five-value list is not literally correct as an enum
+# for this response variant; each is resolved explicitly below rather than
+# copied verbatim:
+#
+#   - `unsupported`   — KEPT. §19: "the FR-009 'unsupported capability'
+#                        response ... never a fabricated or empty-looking
+#                        success." This is a genuine error-shaped outcome.
+#   - `ambiguous`     — DROPPED as an error-`type` value. §19: "FR-008/§15's
+#                        clarification response, not an error." Ambiguity
+#                        already has its own dedicated wire shape
+#                        (`AssistantClarificationResponse`, §15.3) — carrying
+#                        it a second time as an error `type` value would let
+#                        two different keys in the same discriminated union
+#                        express the identical outcome, which is exactly the
+#                        kind of representational overlap a discriminated
+#                        response must not have. ddd-model.md's
+#                        `AuditRecord.ErrorDetail.category` enum *does* still
+#                        carry `ambiguous` — that is a separate, internal
+#                        audit-log categorization (needs to record "this turn
+#                        ended in a clarification" as one of several turn
+#                        outcomes), not the client-facing wire contract this
+#                        file defines.
+#   - `unauthorized`  — DROPPED as an error-`type` value. §19: "403 at the
+#                        earliest applicable check ... generic message" and
+#                        FR-001/FR-010: "never invoke the LLM for an
+#                        unauthorized caller" / "401/403 on failure, at the
+#                        earliest check that fails." An unauthorized caller
+#                        never reaches the point in the request pipeline that
+#                        would construct this 200-status discriminated body at
+#                        all — it is rejected earlier, as a genuine HTTP
+#                        401/403 (see the `security` block and `401`/`403`
+#                        responses below), never as a `200` body with
+#                        `error.type = unauthorized`. Same audit-vs-wire split
+#                        as `ambiguous` above: `AuditRecord.ErrorDetail`'s
+#                        `unauthorized` category records the fact for audit
+#                        purposes even though the caller received a 401/403,
+#                        not a 200.
+#   - `no-data`       — DROPPED as an error-`type` value. §19 is explicit and
+#                        unambiguous here: "No data for a supported, valid
+#                        query ... A normal success response with an empty/
+#                        zero result and an explicit 'no orders in this
+#                        period' statement — distinguishable from
+#                        'unsupported'." This is the (a) success shape
+#                        (`AssistantAnswerResponse`) with an empty `data.rows`
+#                        array and an `answer` that states the emptiness
+#                        plainly — never the (c) error shape.
+#   - `unavailable`   — KEPT, and left as a single value rather than exploded
+#                        into per-cause sub-values. edge-cases.md
+#                        ("LLM Provider Unavailable/Timeout", "kart-analytics-
+#                        service Unavailable/Timeout") distinguishes
+#                        plan-call-failure vs. explain-call-failure vs.
+#                        Analytics-unavailable/timeout *for the audit log*
+#                        (`AuditRecord.errors[].category` sub-classifies
+#                        under `unavailable`) — but on the wire, an
+#                        explain-call failure is NOT an error at all (§19:
+#                        "fall back to the template-built explanation from
+#                        data ... the user still gets their table/chart"),
+#                        and a plan-call failure vs. an Analytics outage both
+#                        collapse to the same generic client-facing message
+#                        ("the underlying data source is temporarily
+#                        unavailable, please retry" / "assistant temporarily
+#                        unavailable") — the client has no actionable use for
+#                        which internal hop failed, and not distinguishing
+#                        them avoids exposing this service's internal
+#                        architecture to a caller, the same "no leakage of
+#                        which specific check failed" spirit FR-010 states
+#                        for authorization (applied here by direct analogy to
+#                        availability failures).
+#
+#   `expired-session` is ADDED, not in §19/§21.1's original list. edge-
+#   cases.md's approved "Conversation Session Expiry Mid-Conversation"
+#   decision states explicitly: "an explicit expired-session error `type`
+#   (extending §19/§21.1's error taxonomy) once the idle limit is actually
+#   exceeded — never attempt to interpret an orphaned follow-up against no
+#   context." This is a closed, approved extension to the taxonomy this
+#   contract must reflect, not an invention of this pipeline stage.
+#
+# Net result: the wire-level `AssistantErrorResponse.error.type` enum is
+# `[unsupported, unavailable, expired-session]` — three values, not five.
+# `ambiguous` and `no-data` are absorbed into the other two response variants
+# (clarification and success, respectively); `unauthorized` never reaches a
+# 200 response at all.
+#
+# Publishing a stable copy to kart-shared is deferred until that repo exists
+# in this pipeline's scope (per this agent's standard output note).
+
+openapi: 3.0.3
+info:
+  title: kart-ai-assistant-service API
+  version: 1.0.0
+  description: >
+    Public-facing (via kart-api-gateway), read-only natural-language business
+    query endpoint for the Kart Business Assistant (requirement-spec.md §1).
+    This service owns no Core-domain aggregate and never mutates any business
+    data anywhere on the platform (ADR-0024) — every response is either a
+    grounded answer sourced live from kart-analytics-service, a clarifying
+    question, or an explicit error, never a fabricated figure (FR-004, §16).
+
+servers:
+  - url: /v1
+
+security:
+  - bearerAuth: [ai-assistant.query]
+
+paths:
+  /ai-assistant/query:
+    post:
+      operationId: queryAssistant
+      summary: Ask the Kart Business Assistant a natural-language business question.
+      description: >
+        Accepts one conversational turn. Routes the message to NL→intent
+        translation (LLM, structured output), validates/authorizes the
+        resulting intent, executes at most a handful of calls against
+        kart-analytics-service's internal query API, and returns exactly one
+        of three discriminated shapes (source spec §21.1):
+
+          1. `AssistantAnswerResponse` — a grounded answer + data table +
+             optional chart + provenance metadata (§13.2), including the
+             "supported query, zero rows" case (FR-009) and the "assumed
+             default metric, disclosed in the answer text" case (§15.2).
+          2. `AssistantClarificationResponse` — the question is genuinely
+             ambiguous (§15.1); no query was executed (§15.3).
+          3. `AssistantErrorResponse` — `unsupported` (out-of-scope
+             dimension, e.g. Geography/ADR-0027 or Seller-Vendor/ADR-0026),
+             `unavailable` (Analytics or the model-gateway's planning call
+             is down/timed out — after one bounded retry, edge-cases.md), or
+             `expired-session` (a follow-up arrived after this
+             conversation's idle TTL elapsed, edge-cases.md).
+
+        RBAC (ADR-0025, FR-010): the Gateway's own coarse-role check
+        (`Admin`/`Support Agent`) has already run by the time a request
+        reaches this service; this service's own `ai-assistant.query` scope
+        check (see `security` above) runs before any LLM call is made, so an
+        unauthorized caller never reaches the model gateway or
+        kart-analytics-service at all (FR-001).
+      security:
+        - bearerAuth: [ai-assistant.query]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssistantQueryRequest'
+      responses:
+        '200':
+          description: >
+            Exactly one of an answer, a clarification, or an error — see the
+            reconciled error-taxonomy note at the top of this file for why
+            `unauthorized`/`no-data`/`ambiguous` are not members of the
+            `error.type` enum below despite appearing in the source spec's
+            own loose §21.1 phrasing.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AssistantAnswerResponse'
+                  - $ref: '#/components/schemas/AssistantClarificationResponse'
+                  - $ref: '#/components/schemas/AssistantErrorResponse'
+              examples:
+                answer:
+                  summary: Successful ranking query (source spec §23 Example 1)
+                  value:
+                    conversationId: "b8f1c2a0-1e9e-4b7a-9c3a-2f6a1d9e7c11"
+                    answer: >-
+                      Here are the top 5 products by revenue over the last 7
+                      days (Aug 11–18). Note: today's figures are still
+                      provisional and will finalize after tonight's
+                      reconciliation.
+                    data:
+                      columns: [rank, product, sku, revenue, unitsSold, orderCount]
+                      rows:
+                        - [1, "Wireless Mouse", "sku-192837", 4820.00, 210, 198]
+                    visualization:
+                      type: horizontal_bar_chart
+                      title: "Top 5 Products by Revenue (Aug 11–18)"
+                      xAxis: revenue
+                      yAxis: product
+                    metadata:
+                      intent:
+                        metric: revenue
+                        entity: product
+                        aggregation: sum
+                        dimensions: [product]
+                        filters:
+                          dateRange: { from: "2026-08-11T00:00:00Z", to: "2026-08-18T00:00:00Z" }
+                        ranking: { sortBy: revenue, direction: desc, limit: 5 }
+                        visualizationHint: horizontal_bar_chart
+                        clarificationNeeded: false
+                      source: "kart-analytics-service:/internal/v1/dashboards/product-performance"
+                      isProvisional: true
+                      reconciledThrough: "2026-08-17"
+                      generatedAt: "2026-08-18T09:03:00Z"
+                clarification:
+                  summary: Ambiguous superlative with no metric (source spec §23 Example 3)
+                  value:
+                    conversationId: "b8f1c2a0-1e9e-4b7a-9c3a-2f6a1d9e7c11"
+                    clarification:
+                      question: "By 'best,' do you mean by revenue, units sold, or order count?"
+                      options: ["Revenue", "Units Sold", "Order Count"]
+                    data: null
+                    visualization: null
+                unsupported:
+                  summary: Out-of-scope dimension (source spec §23 Example 4)
+                  value:
+                    conversationId: "b8f1c2a0-1e9e-4b7a-9c3a-2f6a1d9e7c11"
+                    error:
+                      type: unsupported
+                      message: >-
+                        I can't currently break sales down by city/area — that
+                        data isn't captured in Kart's analytics warehouse
+                        today. I can show you top products overall, or by
+                        category, if that helps.
+                    data: null
+                    visualization: null
+        '400':
+          description: >
+            Malformed input — e.g. `message` missing/empty/over 1000
+            characters, or a `conversationId` that isn't a valid UUID. This is
+            a distinct case from "invalid/empty question" (§19), which this
+            request-validation layer resolves as a fast-fail 400 rather than
+            a turn-level clarification: an empty `message` fails `minLength`
+            here, never reaching NL→intent translation at all, consistent
+            with FR-001's "do not call the LLM for empty input."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '401':
+          description: >
+            Not authenticated (missing/invalid/expired Identity-issued JWT).
+            Generic message only — no distinction is made in the response
+            body between "not authenticated" and "authenticated but missing
+            the `ai-assistant.query` scope" (see `403` below and FR-010's "no
+            leakage of which specific check failed," avoiding revealing
+            scope/role internals to a probing caller).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: >
+            Authenticated, but the caller's role/scope claims don't satisfy
+            this endpoint's requirements — the JWT lacks `Admin`/`Support
+            Agent` (Gateway's own coarse check) or lacks the
+            `ai-assistant.query` scope (ADR-0025, this service's own check).
+            Generic message only, deliberately not naming which of the two
+            checks failed (FR-010).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '5XX':
+          description: >
+            Genuine infrastructure failure inside this service itself (not
+            to be confused with a downstream Analytics/LLM outage, which is
+            surfaced as a `200` `AssistantErrorResponse` with
+            `error.type: unavailable` per FR-003/§19 — this service fails
+            closed on a *downstream* outage rather than bubbling it up as its
+            own 5xx, so a caller can always tell "the assistant itself is
+            broken" apart from "the assistant is healthy but its data source
+            isn't"). Handled by this service's single global exception
+            handler (api-standards.md), never a hand-built inline error body.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+components:
+  securitySchemes:
+    # Reproduced verbatim from ADR-0025's Decision section — do not diverge
+    # from this shape; ADR-0025 fixes it explicitly so the API Design Agent
+    # does not invent its own convention independently.
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Identity-issued RS256 JWT carrying an Admin or Support Agent role
+        claim plus the `ai-assistant.query` scope (ADR-0025), forwarded
+        unchanged by the API Gateway (ADR-0023) — kart-ai-assistant-service
+        re-validates the same token rather than trusting a minted internal
+        header.
+
+  schemas:
+    AssistantQueryRequest:
+      type: object
+      required: [message]
+      properties:
+        conversationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Omit to start a new conversation (ddd-model.md's `ConversationId`
+            — this service generates and returns a fresh one on the first
+            turn, echoed back in every response). Supply the value returned
+            by a prior turn's response to continue that conversation as a
+            follow-up (FR-007, §14).
+        message:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: >
+            UTF-8 free-text business question (FR-001 input bound: "UTF-8
+            text, ≤ 1,000 characters").
+          example: "top 5 selling products in the last 7 days"
+
+    # ------------------------------------------------------------------
+    # Response variants (discriminated union). No explicit discriminator
+    # property is introduced beyond what the source spec's own §13.2/§15.3
+    # illustrative JSON already shows — each variant is distinguishable
+    # structurally by which of `answer` / `clarification` / `error` is
+    # present, matching the literal shapes already fixed by the approved
+    # source spec and requirement-spec.md rather than inventing a new wire
+    # field. `conversationId` is the one field added to all three variants
+    # beyond what §13.2/§15.3 literally show — necessary so a client can
+    # continue the conversation on a follow-up turn (ddd-model.md's
+    # `ConversationId`: "generated by this service on the first turn...
+    # supplied by the client on every subsequent turn"), the same kind of
+    # spec-gap addition kart-admin-service/api-contract.yaml's own header
+    # note already precedents ("no concrete route existed anywhere upstream,
+    # so one is defined here").
+    # ------------------------------------------------------------------
+
+    AssistantAnswerResponse:
+      type: object
+      description: >
+        The (a) normal answer shape (source spec §13.2), including the
+        "supported query, zero rows" case (FR-009) — when `data.rows` is
+        empty, `answer` must state the emptiness explicitly (e.g. "no orders
+        in this period"), never a silent/empty-looking success.
+      required: [answer, data, visualization, metadata]
+      properties:
+        conversationId:
+          type: string
+          format: uuid
+          description: Echoes the request's `conversationId`, or the freshly generated one for a new conversation.
+        answer:
+          type: string
+          description: >
+            Natural-language explanation, grounded strictly in `data`
+            (FR-004) — every numeric token in this field is checked to trace
+            to a value in `data` before this response is returned; on a
+            grounding-check failure the generated text is discarded and
+            replaced with a template-built sentence assembled directly from
+            `data` (FR-004).
+        data:
+          $ref: '#/components/schemas/AssistantResultTable'
+        visualization:
+          $ref: '#/components/schemas/AssistantVisualization'
+        metadata:
+          $ref: '#/components/schemas/AssistantResponseMetadata'
+
+    AssistantClarificationResponse:
+      type: object
+      description: >
+        The (b) clarification shape (source spec §15.3) — returned instead
+        of a data answer when a ranking/superlative term is used without a
+        resolvable metric and no prior-turn context supplies one, or an
+        unrecognized entity name needs disambiguating (§15.1). No query is
+        executed for this turn.
+      required: [clarification, data, visualization]
+      properties:
+        conversationId:
+          type: string
+          format: uuid
+        clarification:
+          type: object
+          required: [question, options]
+          properties:
+            question:
+              type: string
+              example: "By 'best,' do you mean by revenue, units sold, or order count?"
+            options:
+              type: array
+              items: { type: string }
+              minItems: 1
+              example: ["Revenue", "Units Sold", "Order Count"]
+        data:
+          type: object
+          nullable: true
+          enum: [null]
+          description: Always `null` for this response type (§15.3).
+        visualization:
+          type: object
+          nullable: true
+          enum: [null]
+          description: Always `null` for this response type (§15.3).
+
+    AssistantErrorResponse:
+      type: object
+      description: >
+        The (c) error shape. See the reconciled error-taxonomy note at the
+        top of this file for why `error.type` has exactly three members
+        (`unsupported`, `unavailable`, `expired-session`) rather than the
+        five loosely named in the source spec's §21.1 phrasing.
+      required: [error, data, visualization]
+      properties:
+        conversationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Null only for `expired-session`, where the supplied
+            `conversationId` no longer references a live session — never
+            echoed back as if it were still valid.
+        error:
+          type: object
+          required: [type, message]
+          properties:
+            type:
+              type: string
+              enum: [unsupported, unavailable, expired-session]
+              description: >
+                `unsupported` — FR-009, an out-of-scope dimension (Geography/
+                ADR-0027, Seller-Vendor/ADR-0026) or any intent with no
+                matching registered capability (§10.3 registry).
+                `unavailable` — kart-analytics-service or the model-gateway's
+                planning call is down/timed out after one bounded retry
+                (edge-cases.md); deliberately not sub-classified on the wire
+                by which downstream call failed (see reconciliation note).
+                `expired-session` — a follow-up arrived after this
+                conversation's idle TTL elapsed (edge-cases.md, "Conversation
+                Session Expiry Mid-Conversation"); the caller must restate
+                the full question rather than relying on carried-forward
+                context.
+            message:
+              type: string
+              description: Plain-language explanation of what's missing or unavailable, and, where applicable, a concrete next step (source spec §3.2).
+              example: >-
+                I can't currently break sales down by city/area — that data
+                isn't captured in Kart's analytics warehouse today. I can
+                show you top products overall, or by category, if that helps.
+        data:
+          type: object
+          nullable: true
+          enum: [null]
+          description: Always `null` for this response type.
+        visualization:
+          type: object
+          nullable: true
+          enum: [null]
+          description: Always `null` for this response type.
+
+    AssistantResultTable:
+      type: object
+      description: >
+        The structured data behind an answer (FR-005) — always present, table
+        never omitted in favor of a chart alone. `rows` may be an empty array
+        for the "supported, zero results" case (FR-009); it is never absent
+        or `null` for a successful `AssistantAnswerResponse`.
+      required: [columns, rows]
+      properties:
+        columns:
+          type: array
+          items: { type: string }
+          example: [rank, product, sku, revenue, unitsSold, orderCount]
+        rows:
+          type: array
+          description: Each row is a positional array aligned to `columns`; cell values are scalars (string/number/boolean/null).
+          items:
+            type: array
+            items: {}
+          example:
+            - [1, "Wireless Mouse", "sku-192837", 4820.00, 210, 198]
+
+    AssistantVisualization:
+      type: object
+      nullable: true
+      description: >
+        Chosen by the deterministic rule table (source spec §13.1), not by
+        open-ended LLM discretion (FR-006) — `null` only when no chart applies
+        (e.g. `table_only`-equivalent cases still populate this with
+        `type: table_only` per §13.1's own "Log/audit rows: Table only" row;
+        this field is `null` strictly for the clarification/error variants,
+        never for a successful answer with a supported query type).
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum:
+            - bar_chart
+            - horizontal_bar_chart
+            - line_chart
+            - donut_chart
+            - funnel_chart
+            - single_stat
+            - table_only
+          description: Closed enum (source spec §13.2) — not tied to a specific charting library.
+        title:
+          type: string
+        xAxis:
+          type: string
+          nullable: true
+        yAxis:
+          type: string
+          nullable: true
+
+    AssistantResponseMetadata:
+      type: object
+      description: >
+        Provenance/observability metadata (source spec §13.2). `isProvisional`
+        and `reconciledThrough` are the same fields kart-analytics-service's
+        own `DashboardEnvelope` carries (kart-analytics-service/api-
+        contract.yaml) — passed through unmodified (FR-003) and never
+        omitted when the underlying result carries them (FR-012). See this
+        file's header note on why these are inline-duplicated rather than
+        $ref'd across service contract files.
+      required: [source, generatedAt]
+      properties:
+        intent:
+          $ref: '#/components/schemas/ResolvedIntent'
+        source:
+          type: string
+          description: The kart-analytics-service endpoint(s) queried for this turn.
+          example: "kart-analytics-service:/internal/v1/dashboards/product-performance"
+        isProvisional:
+          type: boolean
+          nullable: true
+          description: >
+            Shared origin: kart-analytics-service/api-contract.yaml's
+            `DashboardEnvelope.isProvisional`. True until the nightly batch
+            reconciliation finalizes the day's figures; surfaced here
+            unmodified (FR-003/FR-012), never smoothed over.
+        reconciledThrough:
+          type: string
+          format: date
+          nullable: true
+          description: >
+            Shared origin: kart-analytics-service/api-contract.yaml's
+            `DashboardEnvelope.reconciledThrough`. Last date fully reconciled;
+            `null` if none yet for this window.
+        generatedAt:
+          type: string
+          format: date-time
+          description: When this response was assembled.
+
+    ResolvedIntent:
+      type: object
+      description: >
+        The canonical structured intent (source spec §8) — the only shape the
+        LLM's planning call is allowed to produce (structured-output/function-
+        calling constrained generation, §12). Echoed here for audit/
+        transparency, never re-derived or re-interpreted client-side.
+        `dimensions` is a closed enum, not open text — per ADR-0026 (Decision
+        3: "no extensibility hook... anywhere in this service's registry,
+        intent schema") and ADR-0027, no `geography`/`seller`/`vendor` value
+        exists in this enum, and none is to be added as a "reserved for
+        future use" placeholder.
+      properties:
+        metric:
+          type: string
+          nullable: true
+          enum:
+            - revenue
+            - units_sold
+            - order_count
+            - aov
+            - conversion_rate
+            - fulfillment_time
+            - inventory_movement
+            - promotion_redemption_rate
+            - review_rating
+            - notification_delivery
+            - admin_action_count
+        entity:
+          type: string
+          nullable: true
+          enum:
+            - product
+            - category
+            - order
+            - funnel
+            - fulfillment
+            - inventory
+            - promotion
+            - user
+            - review
+            - notification
+            - admin_action
+        aggregation:
+          type: string
+          nullable: true
+          enum: [sum, count, avg, p50, p95, p99, rate]
+        dimensions:
+          type: array
+          items:
+            type: string
+            enum: [time, product, category, channel, hour_of_day, funnel_stage, star_rating, action_type]
+        filters:
+          type: object
+          properties:
+            dateRange:
+              type: object
+              nullable: true
+              properties:
+                from: { type: string, format: date-time }
+                to: { type: string, format: date-time }
+            category: { type: string, nullable: true }
+            sku: { type: string, nullable: true }
+            channel: { type: string, nullable: true }
+            actionType: { type: string, nullable: true }
+        ranking:
+          type: object
+          nullable: true
+          description: >
+            `limit` is clamped to the target endpoint's documented maximum
+            when the requested value exceeds it, with the clamp disclosed in
+            `answer` (edge-cases.md, "Schema-Valid Intent Requests a
+            Rank/Limit Analytics Cannot Fulfill") — this field always
+            reflects the clamped, actually-executed value, never the
+            originally-requested one.
+          properties:
+            sortBy: { type: string, nullable: true }
+            direction: { type: string, enum: [asc, desc], nullable: true }
+            limit: { type: integer, nullable: true }
+        comparison:
+          type: object
+          nullable: true
+          properties:
+            baselineDateRange:
+              type: object
+              nullable: true
+              properties:
+                from: { type: string, format: date-time }
+                to: { type: string, format: date-time }
+        visualizationHint:
+          type: string
+          nullable: true
+          description: Advisory only (FR-006) — the application applies §13.1's rule table and only honors this hint when the user's own words explicitly requested a specific chart type.
+          enum:
+            - bar_chart
+            - horizontal_bar_chart
+            - line_chart
+            - donut_chart
+            - funnel_chart
+            - single_stat
+            - table_only
+        clarificationNeeded:
+          type: boolean
+
+    Problem:
+      type: object
+      description: >
+        RFC 7807-style problem details — matches this repo's own established
+        `Problem` convention (kart-admin-service/api-contract.yaml,
+        kart-identity-service/api-contract.yaml), applied here for
+        consistency rather than introducing a new error-envelope shape
+        (api-standards.md "Consistent Response Model": errors are never
+        bespoke per service).
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: unauthorized
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
