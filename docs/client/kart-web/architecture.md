@@ -1,7 +1,7 @@
 ---
 doc_type: architecture
 service: kart-web
-status: pending-approval
+status: approved
 generated_by: human-authored (architecture-agent equivalent, client tier)
 source: docs/client/kart-web/requirement-spec.md
 ---

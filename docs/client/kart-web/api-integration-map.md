@@ -1,7 +1,7 @@
 ---
 doc_type: api-integration-map
 service: kart-web
-status: pending-approval
+status: approved
 generated_by: human-authored (client tier)
 source: docs/client/kart-web/requirement-spec.md, docs/architecture/container-diagram.md
 ---

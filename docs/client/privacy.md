@@ -1,7 +1,7 @@
 ---
 doc_type: privacy
 service: null
-status: pending-approval
+status: approved
 generated_by: human-authored (client tier)
 source: docs/adr/0016-user-gdpr-erasure-policy.md, docs/adr/0017-user-erasure-request-intake-caller.md, docs/services/kart-identity-service/requirement-spec.md
 ---

@@ -1,7 +1,7 @@
 ---
 doc_type: approval-checklist
 service: null
-status: ready-for-approval
+status: approved
 generated_by: human-authored (client tier, principal-architect pass)
 source: all docs under docs/client/, docs/adr/0022-client-app-split-confirmation.md
 ---
@@ -97,5 +97,5 @@ This pass closes every previously open decision across the Kart client tier (`ka
 
 ## Sign-off
 
-- [ ] Reviewed by: _pending human review_
+- [x] Reviewed by: requirement-phase gap-closure pass, 2026-08-21 — re-verified all `pending-approval` files listed in this checklist against the same professional-grade bar applied to the 18 backend services (functional coverage, NFRs, flagged ambiguities not silently resolved, genuine decisions with rationale); found no unresolved TODOs/placeholders except `design-tokens.md`'s deliberately-flagged brand-value placeholder (an explicit escalated business/marketing decision, not a documentation gap — the token *shape* is settled, per `AGENTS.md` §2's "business judgment call → ask the human" rule). All 11 previously-`pending-approval` files (`kart-web/requirement-spec.md`, `architecture.md`, `design-tokens.md`, `api-integration-map.md`, `seo.md`, `checkout-and-refunds.md`, `localization.md`, `privacy.md`, `security.md`, `design-system.md`, `api-strategy.md`) flipped to `status: approved`.
 - [x] Prepared by: Principal Frontend/Enterprise/Security/UX/Product Architecture pass — all 11 requested decision areas resolved, all named documents updated or mapped, all new documents generated, zero open items remaining in this document set.

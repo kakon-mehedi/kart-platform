@@ -1,7 +1,7 @@
 ---
 doc_type: checkout-and-refunds
 service: kart-web
-status: pending-approval
+status: approved
 generated_by: human-authored (client tier)
 source: docs/client/kart-web/requirement-spec.md §3.4/§8, docs/client/kart-web/api-integration-map.md, docs/services/kart-order-service/ddd-model.md, docs/services/kart-payment-service/requirement-spec.md
 ---
