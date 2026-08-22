@@ -1,7 +1,7 @@
 ---
 doc_type: design-system
 service: null
-status: pending-approval
+status: approved
 generated_by: human-authored (client tier)
 source: docs/client/kart-web/design-tokens.md, docs/client/kart-admin-web/architecture.md, docs/PLATFORM_BLUEPRINT.md §2
 ---

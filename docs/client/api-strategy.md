@@ -1,7 +1,7 @@
 ---
 doc_type: api-strategy
 service: null
-status: pending-approval
+status: approved
 generated_by: human-authored (client tier)
 source: docs/client/kart-web/api-integration-map.md, docs/PLATFORM_BLUEPRINT.md §8.2
 ---

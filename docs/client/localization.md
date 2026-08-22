@@ -1,7 +1,7 @@
 ---
 doc_type: localization
 service: null
-status: pending-approval
+status: approved
 generated_by: human-authored (client tier)
 source: docs/client/kart-web/requirement-spec.md §2/§9, docs/client/kart-admin-web/requirement-spec.md §2
 ---

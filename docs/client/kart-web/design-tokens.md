@@ -1,7 +1,7 @@
 ---
 doc_type: design-tokens
 service: kart-web
-status: pending-approval
+status: approved
 generated_by: human-authored (client tier)
 source: docs/client/kart-web/requirement-spec.md
 ---

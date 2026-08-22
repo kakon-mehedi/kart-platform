@@ -1,7 +1,7 @@
 ---
 doc_type: security
 service: null
-status: pending-approval
+status: approved
 generated_by: human-authored (client tier)
 source: docs/client/kart-web/requirement-spec.md §5, docs/client/kart-admin-web/requirement-spec.md §5/§6, docs/services/kart-identity-service/requirement-spec.md §4
 ---

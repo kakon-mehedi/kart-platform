@@ -27,8 +27,8 @@ Kart's own architecture already draws this line before this folder existed — [
 
 | App | Requirement Spec | Architecture | Design Tokens | API Integration Map | Edge Cases | Design Decisions | Tickets |
 |---|---|---|---|---|---|---|---|
-| [`kart-web`](kart-web/) | [✅ drafted](kart-web/requirement-spec.md) | [✅ drafted](kart-web/architecture.md) | [✅ drafted](kart-web/design-tokens.md) | [✅ drafted](kart-web/api-integration-map.md) | [✅ drafted](kart-web/edge-cases.md) | [✅ drafted](kart-web/design-decisions.md) | [✅ drafted](kart-web/tickets.md) |
-| [`kart-admin-web`](kart-admin-web/) | [✅ drafted](kart-admin-web/requirement-spec.md) | [✅ drafted](kart-admin-web/architecture.md) | — (inherits `kart-web`'s brand tokens via `@kart/design-system`, see [`design-system.md`](design-system.md)) | — (folded into architecture.md, scope is small) | [✅ drafted](kart-admin-web/edge-cases.md) | [✅ drafted](kart-admin-web/design-decisions.md) | [✅ drafted](kart-admin-web/tickets.md) |
+| [`kart-web`](kart-web/) | [✅ approved](kart-web/requirement-spec.md) | [✅ approved](kart-web/architecture.md) | [✅ approved](kart-web/design-tokens.md) | [✅ approved](kart-web/api-integration-map.md) | [✅ approved](kart-web/edge-cases.md) | [✅ approved](kart-web/design-decisions.md) | [✅ approved](kart-web/tickets.md) |
+| [`kart-admin-web`](kart-admin-web/) | [✅ approved](kart-admin-web/requirement-spec.md) | [✅ approved](kart-admin-web/architecture.md) | — (inherits `kart-web`'s brand tokens via `@kart/design-system`, see [`design-system.md`](design-system.md)) | — (folded into architecture.md, scope is small) | [✅ approved](kart-admin-web/edge-cases.md) | [✅ approved](kart-admin-web/design-decisions.md) | [✅ approved](kart-admin-web/tickets.md) |
 
 ### Cross-cutting documents (shared by both apps)
 
